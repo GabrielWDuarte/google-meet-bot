@@ -20,31 +20,8 @@ const BOT_CONFIG = {
 
 // Função para encontrar o executável do Chrome
 function getChromeExecutablePath() {
-    const possiblePaths = [
-        '/usr/bin/google-chrome-stable',
-        '/usr/bin/google-chrome',
-        '/usr/bin/chromium-browser',
-        '/usr/bin/chromium',
-        '/snap/bin/chromium',
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', // macOS
-        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', // Windows
-        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe' // Windows 32bit
-    ];
-    
-    const fs = require('fs');
-    for (const path of possiblePaths) {
-        try {
-            if (fs.existsSync(path)) {
-                console.log(`✅ Chrome encontrado em: ${path}`);
-                return path;
-            }
-        } catch (error) {
-            continue;
-        }
-    }
-    
-    console.log('⚠️ Chrome não encontrado, usando padrão do Puppeteer');
-    return null; // Usar padrão do Puppeteer
+    console.log('🔧 Forçando uso do Chrome bundled do Puppeteer');
+    return null; // Sempre usar bundled
 }
 
 // Classe do Bot de Gravação
