@@ -13,16 +13,10 @@ const monitoringIntervals = new Map();
 // Configurações do bot
 const BOT_CONFIG = {
     email: 'mentorias@universoextremo.com.br',
-    headless: true, // True para produção
+    headless: "new", // Usar novo headless do Puppeteer
     monitorInterval: 30000, // 30 segundos
     maxDuration: 2 * 60 * 60 * 1000, // 2 horas máximo
 };
-
-// Função para encontrar o executável do Chrome
-function getChromeExecutablePath() {
-    console.log('🔧 Forçando uso do Chrome bundled do Puppeteer');
-    return null; // Sempre usar bundled
-}
 
 // Classe do Bot de Gravação
 class MeetingRecordingBot {
@@ -39,8 +33,7 @@ class MeetingRecordingBot {
     async initialize() {
         console.log(`🤖 Inicializando bot para: ${this.meeting.title || this.meeting.ment_titulo || 'Reunião'}`);
         
-        const chromeExecutablePath = getChromeExecutablePath();
-        
+        // Usar apenas Chrome bundled do Puppeteer
         const launchOptions = {
             headless: BOT_CONFIG.headless,
             userDataDir: './bot-session',
@@ -60,11 +53,7 @@ class MeetingRecordingBot {
             ]
         };
 
-        // Adicionar executablePath apenas se encontrou o Chrome
-        if (chromeExecutablePath) {
-            launchOptions.executablePath = chromeExecutablePath;
-        }
-
+        // NÃO definir executablePath - usar Chrome bundled do Puppeteer
         this.browser = await puppeteer.launch(launchOptions);
 
         this.page = await this.browser.newPage();
@@ -761,7 +750,7 @@ app.get('/api/health', (req, res) => {
         uptime: process.uptime(),
         memory: process.memoryUsage(),
         timestamp: new Date().toISOString(),
-        chrome: getChromeExecutablePath() || 'Puppeteer padrão'
+        chrome: 'Puppeteer bundled Chrome'
     });
 });
 
@@ -771,7 +760,7 @@ app.listen(port, () => {
     console.log('🤖 BOT DE GRAVAÇÃO GOOGLE MEET ONLINE');
     console.log('🤖 =====================================');
     console.log(`🌐 Servidor rodando na porta: ${port}`);
-    console.log(`🔧 Chrome: ${getChromeExecutablePath() || 'Puppeteer padrão'}`);
+    console.log(`🔧 Chrome: Puppeteer bundled`);
     console.log(`📊 Funcionalidades:`);
     console.log(`   👀 Monitoramento automático de reuniões`);
     console.log(`   🚪 Entrada automática quando reunião inicia`);
