@@ -18,6 +18,35 @@ const BOT_CONFIG = {
     maxDuration: 2 * 60 * 60 * 1000, // 2 horas máximo
 };
 
+// Função para encontrar o executável do Chrome
+function getChromeExecutablePath() {
+    const possiblePaths = [
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium',
+        '/snap/bin/chromium',
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', // macOS
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', // Windows
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe' // Windows 32bit
+    ];
+    
+    const fs = require('fs');
+    for (const path of possiblePaths) {
+        try {
+            if (fs.existsSync(path)) {
+                console.log(`✅ Chrome encontrado em: ${path}`);
+                return path;
+            }
+        } catch (error) {
+            continue;
+        }
+    }
+    
+    console.log('⚠️ Chrome não encontrado, usando padrão do Puppeteer');
+    return null; // Usar padrão do Puppeteer
+}
+
 // Classe do Bot de Gravação
 class MeetingRecordingBot {
     constructor(meetingData) {
@@ -31,9 +60,11 @@ class MeetingRecordingBot {
     }
 
     async initialize() {
-        console.log(`🤖 Inicializando bot para: ${this.meeting.title}`);
+        console.log(`🤖 Inicializando bot para: ${this.meeting.title || this.meeting.ment_titulo || 'Reunião'}`);
         
-        this.browser = await puppeteer.launch({
+        const chromeExecutablePath = getChromeExecutablePath();
+        
+        const launchOptions = {
             headless: BOT_CONFIG.headless,
             userDataDir: './bot-session',
             args: [
@@ -43,24 +74,41 @@ class MeetingRecordingBot {
                 '--use-fake-device-for-media-stream',
                 '--disable-features=VizDisplayCompositor',
                 '--autoplay-policy=no-user-gesture-required',
-                '--disable-web-security'
+                '--disable-web-security',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-default-apps'
             ]
-        });
+        };
+
+        // Adicionar executablePath apenas se encontrou o Chrome
+        if (chromeExecutablePath) {
+            launchOptions.executablePath = chromeExecutablePath;
+        }
+
+        this.browser = await puppeteer.launch(launchOptions);
 
         this.page = await this.browser.newPage();
         
         // Configurar permissões
         const context = this.browser.defaultBrowserContext();
         await context.overridePermissions('https://meet.google.com', [
-            'microphone', 'camera'
+            'microphone', 
+            'camera'
         ]);
 
         await this.page.setViewport({ width: 1366, height: 768 });
-        console.log(`✅ Bot inicializado para: ${this.meeting.eventId}`);
+        
+        // Log do evento usado como ID
+        const eventId = this.meeting.eventId || this.meeting.ment_id || 'unknown';
+        console.log(`✅ Bot inicializado para evento: ${eventId}`);
     }
 
     async startMonitoring() {
-        console.log(`👀 Iniciando monitoramento da reunião: ${this.meeting.title}`);
+        const meetingTitle = this.meeting.title || this.meeting.ment_titulo || 'Reunião';
+        console.log(`👀 Iniciando monitoramento da reunião: ${meetingTitle}`);
         this.isMonitoring = true;
         
         const checkInterval = setInterval(async () => {
@@ -70,14 +118,18 @@ class MeetingRecordingBot {
                     return;
                 }
 
-                console.log(`🔍 Verificando se reunião ${this.meeting.eventId} iniciou...`);
+                const eventId = this.meeting.eventId || this.meeting.ment_id || 'unknown';
+                console.log(`🔍 Verificando se reunião ${eventId} iniciou...`);
                 
                 const hasParticipants = await this.checkIfMeetingStarted();
                 
                 if (hasParticipants) {
                     console.log(`🎉 Reunião iniciou! Entrando agora...`);
                     clearInterval(checkInterval);
-                    monitoringIntervals.delete(this.meeting.eventId);
+                    const storageKey = this.meeting.eventId || this.meeting.ment_id;
+                    if (storageKey) {
+                        monitoringIntervals.delete(storageKey);
+                    }
                     
                     await this.joinAndRecord();
                     return;
@@ -85,44 +137,65 @@ class MeetingRecordingBot {
                 
                 // Verificar se passou do horário limite
                 const now = new Date();
-                const meetingTime = new Date(this.meeting.startTime);
+                let meetingTime = new Date();
+                
+                // Tentar diferentes formatos de data
+                if (this.meeting.startTime) {
+                    meetingTime = new Date(this.meeting.startTime);
+                } else if (this.meeting.ment_data && this.meeting.ment_horario) {
+                    meetingTime = new Date(`${this.meeting.ment_data}T${this.meeting.ment_horario}:00`);
+                }
+                
                 const timeDiff = now - meetingTime;
                 
                 if (timeDiff > 30 * 60 * 1000) { // 30 minutos depois
-                    console.log(`⏰ Reunião ${this.meeting.eventId} expirou (30min sem iniciar)`);
+                    console.log(`⏰ Reunião ${eventId} expirou (30min sem iniciar)`);
                     clearInterval(checkInterval);
-                    monitoringIntervals.delete(this.meeting.eventId);
+                    const storageKey = this.meeting.eventId || this.meeting.ment_id;
+                    if (storageKey) {
+                        monitoringIntervals.delete(storageKey);
+                    }
                     await this.cleanup();
                     return;
                 }
                 
             } catch (error) {
-                console.error(`❌ Erro no monitoramento:`, error);
+                console.error(`❌ Erro no monitoramento:`, error.message);
             }
         }, BOT_CONFIG.monitorInterval);
         
-        monitoringIntervals.set(this.meeting.eventId, checkInterval);
+        const storageKey = this.meeting.eventId || this.meeting.ment_id;
+        if (storageKey) {
+            monitoringIntervals.set(storageKey, checkInterval);
+        }
     }
 
     async checkIfMeetingStarted() {
         try {
-            await this.page.goto(this.meeting.meetingUrl, { 
+            const meetingUrl = this.meeting.meetingUrl || this.meeting.ment_zoom || '';
+            
+            if (!meetingUrl || !meetingUrl.includes('meet.google.com')) {
+                console.log('⚠️ URL da reunião inválida ou não é Google Meet');
+                return false;
+            }
+
+            await this.page.goto(meetingUrl, { 
                 waitUntil: 'networkidle0',
-                timeout: 10000 
+                timeout: 15000 
             });
             
             await this.page.waitForTimeout(3000);
             
             // Verificar se há participantes na reunião
-            // Procurar por elementos que indicam reunião ativa
             const meetingActive = await this.page.evaluate(() => {
-                // Verificar se há indicadores de reunião ativa
+                // Verificar indicadores de reunião ativa
                 const indicators = [
                     '[data-meeting-title]',
                     '[jsname="A5Il2c"]', // Botão mais opções
                     '[data-tooltip*="participante"]',
                     '.google-material-icons',
-                    '[aria-label*="pessoas"]'
+                    '[aria-label*="pessoas"]',
+                    '[data-participant-id]'
                 ];
                 
                 for (const selector of indicators) {
@@ -131,11 +204,12 @@ class MeetingRecordingBot {
                     }
                 }
                 
-                // Verificar se não está na tela de "aguardando"
-                const waitingText = document.body.textContent;
-                return !waitingText.includes('Aguardando') && 
-                       !waitingText.includes('Waiting') &&
-                       !waitingText.includes('scheduled');
+                // Verificar se não está na tela de aguardando
+                const waitingText = document.body.textContent.toLowerCase();
+                return !waitingText.includes('aguardando') && 
+                       !waitingText.includes('waiting') &&
+                       !waitingText.includes('scheduled') &&
+                       !waitingText.includes('agendada');
             });
             
             return meetingActive;
@@ -148,9 +222,11 @@ class MeetingRecordingBot {
 
     async joinAndRecord() {
         try {
-            console.log(`🚪 Entrando na reunião: ${this.meeting.title}`);
+            const meetingTitle = this.meeting.title || this.meeting.ment_titulo || 'Reunião';
+            console.log(`🚪 Entrando na reunião: ${meetingTitle}`);
             
-            await this.page.goto(this.meeting.meetingUrl);
+            const meetingUrl = this.meeting.meetingUrl || this.meeting.ment_zoom || '';
+            await this.page.goto(meetingUrl);
             await this.page.waitForTimeout(5000);
             
             // Desligar câmera e microfone
@@ -158,41 +234,77 @@ class MeetingRecordingBot {
             
             // Entrar na reunião
             await this.clickJoinButton();
-            await this.page.waitForTimeout(3000);
+            await this.page.waitForTimeout(5000);
             
             // Iniciar gravação
             const recordingStarted = await this.startRecording();
             
             if (recordingStarted) {
-                console.log(`✅ Gravação iniciada para: ${this.meeting.title}`);
+                console.log(`✅ Gravação iniciada para: ${meetingTitle}`);
                 await this.monitorRecording();
             } else {
                 console.log(`❌ Não foi possível iniciar gravação`);
+                await this.cleanup();
             }
             
         } catch (error) {
-            console.error(`❌ Erro ao entrar e gravar:`, error);
+            console.error(`❌ Erro ao entrar e gravar:`, error.message);
             await this.cleanup();
         }
     }
 
     async toggleMediaDevices() {
         try {
-            // Desligar câmera
-            const cameraBtn = await this.page.$('[data-is-muted="false"][aria-label*="câmera"], [aria-label*="Desativar câmera"]');
-            if (cameraBtn) {
-                await cameraBtn.click();
-                console.log('📷 Câmera desligada');
+            // Aguardar elementos aparecerem
+            await this.page.waitForTimeout(3000);
+            
+            // Desligar câmera - múltiplos seletores
+            const cameraSelectors = [
+                '[data-is-muted="false"][aria-label*="câmera"]',
+                '[aria-label*="Desativar câmera"]',
+                '[data-tooltip*="câmera"]',
+                'button[jsname="BOHaEe"]'
+            ];
+            
+            for (const selector of cameraSelectors) {
+                try {
+                    const cameraBtn = await this.page.$(selector);
+                    if (cameraBtn) {
+                        await cameraBtn.click();
+                        console.log('📷 Câmera desligada');
+                        break;
+                    }
+                } catch (e) {
+                    console.log('⚠️ Erro ao desligar câmera:', e.message);
+                    continue;
+                }
             }
 
-            // Desligar microfone  
-            const micBtn = await this.page.$('[data-is-muted="false"][aria-label*="microfone"], [aria-label*="Desativar microfone"]');
-            if (micBtn) {
-                await micBtn.click();
-                console.log('🎤 Microfone desligado');
+            // Desligar microfone - múltiplos seletores
+            const micSelectors = [
+                '[data-is-muted="false"][aria-label*="microfone"]',
+                '[aria-label*="Desativar microfone"]',
+                '[data-tooltip*="microfone"]',
+                'button[jsname="BOHaEe"]'
+            ];
+            
+            for (const selector of micSelectors) {
+                try {
+                    const micBtn = await this.page.$(selector);
+                    if (micBtn) {
+                        await micBtn.click();
+                        console.log('🎤 Microfone desligado');
+                        break;
+                    }
+                } catch (e) {
+                    console.log('⚠️ Erro ao desligar microfone:', e.message);
+                    continue;
+                }
             }
+            
         } catch (error) {
-            console.log('⚠️ Não foi possível configurar câmera/microfone');
+            console.log('⚠️ Não foi possível configurar câmera/microfone:', error.message);
+            // Continua mesmo com erro - não é crítico
         }
     }
 
@@ -202,7 +314,9 @@ class MeetingRecordingBot {
             '[data-testid="join-button"]',
             'button:has-text("Participar")',
             'button:has-text("Join")',
-            'div[role="button"]:has-text("Participar")'
+            'div[role="button"]:has-text("Participar")',
+            '[aria-label*="Participar"]',
+            '[data-tooltip*="Participar"]'
         ];
 
         for (const selector of selectors) {
@@ -214,6 +328,7 @@ class MeetingRecordingBot {
                     return;
                 }
             } catch (e) {
+                console.log('⚠️ Erro ao clicar em participar:', e.message);
                 continue;
             }
         }
@@ -226,27 +341,67 @@ class MeetingRecordingBot {
         console.log('🎥 Iniciando gravação...');
         
         try {
-            await this.page.waitForTimeout(5000);
+            await this.page.waitForTimeout(8000); // Aguardar página carregar
             
-            // Procurar botão de mais opções
-            const moreButton = await this.page.$('[aria-label="Mais opções"], [data-tooltip="Mais opções"]') ||
-                              await this.page.$('button[jsname="A5Il2c"]');
+            // Procurar e clicar no botão de mais opções
+            const moreSelectors = [
+                '[aria-label="Mais opções"]',
+                '[data-tooltip="Mais opções"]',
+                'button[jsname="A5Il2c"]',
+                '[aria-label*="Mais"]'
+            ];
+            
+            let moreButton = null;
+            for (const selector of moreSelectors) {
+                moreButton = await this.page.$(selector);
+                if (moreButton) break;
+            }
             
             if (moreButton) {
                 await moreButton.click();
-                await this.page.waitForTimeout(2000);
+                await this.page.waitForTimeout(3000);
                 
                 // Procurar opção de gravar
-                const recordOption = await this.page.$('span:has-text("Gravar reunião"), div:has-text("Gravar reunião")');
+                const recordSelectors = [
+                    'span:has-text("Gravar reunião")',
+                    'div:has-text("Gravar reunião")',
+                    '[aria-label*="Gravar"]',
+                    'span:contains("Record")',
+                    'div:contains("Record")'
+                ];
+                
+                let recordOption = null;
+                for (const selector of recordSelectors) {
+                    try {
+                        recordOption = await this.page.$(selector);
+                        if (recordOption) break;
+                    } catch (e) {
+                        continue;
+                    }
+                }
                 
                 if (recordOption) {
                     await recordOption.click();
-                    await this.page.waitForTimeout(2000);
+                    await this.page.waitForTimeout(3000);
                     
                     // Confirmar gravação
-                    const confirmBtn = await this.page.$('button:has-text("Iniciar"), button:has-text("Aceitar")');
-                    if (confirmBtn) {
-                        await confirmBtn.click();
+                    const confirmSelectors = [
+                        'button:has-text("Iniciar")',
+                        'button:has-text("Aceitar")',
+                        'button:has-text("Start")',
+                        '[aria-label*="Iniciar"]'
+                    ];
+                    
+                    for (const selector of confirmSelectors) {
+                        try {
+                            const confirmBtn = await this.page.$(selector);
+                            if (confirmBtn) {
+                                await confirmBtn.click();
+                                break;
+                            }
+                        } catch (e) {
+                            continue;
+                        }
                     }
                     
                     this.isRecording = true;
@@ -256,14 +411,17 @@ class MeetingRecordingBot {
                     await this.setupTranscription();
                     
                     return true;
+                } else {
+                    console.log('⚠️ Opção de gravação não encontrada no menu');
                 }
+            } else {
+                console.log('⚠️ Botão "Mais opções" não encontrado');
             }
             
-            console.log('⚠️ Não foi possível encontrar botão de gravação');
             return false;
             
         } catch (error) {
-            console.error('❌ Erro ao iniciar gravação:', error);
+            console.error('❌ Erro ao iniciar gravação:', error.message);
             return false;
         }
     }
@@ -272,14 +430,26 @@ class MeetingRecordingBot {
         try {
             console.log('📝 Configurando transcrição em português...');
             
-            await this.page.waitForTimeout(2000);
+            await this.page.waitForTimeout(3000);
             
-            // Procurar botão de legendas
-            const captionsBtn = await this.page.$('[aria-label*="legenda"], [data-tooltip*="legenda"]');
+            // Procurar botão de legendas/transcrição
+            const captionSelectors = [
+                '[aria-label*="legenda"]',
+                '[data-tooltip*="legenda"]',
+                '[aria-label*="Transcrição"]',
+                '[data-tooltip*="Transcrição"]',
+                'button[jsname="r8qRAd"]'
+            ];
+            
+            let captionsBtn = null;
+            for (const selector of captionSelectors) {
+                captionsBtn = await this.page.$(selector);
+                if (captionsBtn) break;
+            }
             
             if (captionsBtn) {
                 await captionsBtn.click();
-                await this.page.waitForTimeout(1000);
+                await this.page.waitForTimeout(2000);
                 
                 // Procurar configurações de idioma
                 const settingsBtn = await this.page.$('[aria-label*="configurações"]');
@@ -288,15 +458,28 @@ class MeetingRecordingBot {
                     await this.page.waitForTimeout(1000);
                     
                     // Selecionar português
-                    const portugueseOption = await this.page.$('option[value="pt-BR"], span:has-text("Português")');
-                    if (portugueseOption) {
-                        await portugueseOption.click();
-                        console.log('✅ Transcrição configurada para português');
+                    const portugueseSelectors = [
+                        'option[value="pt-BR"]',
+                        'span:has-text("Português")',
+                        '[data-value="pt-BR"]'
+                    ];
+                    
+                    for (const selector of portugueseSelectors) {
+                        try {
+                            const portugueseOption = await this.page.$(selector);
+                            if (portugueseOption) {
+                                await portugueseOption.click();
+                                console.log('✅ Transcrição configurada para português');
+                                break;
+                            }
+                        } catch (e) {
+                            continue;
+                        }
                     }
                 }
             }
         } catch (error) {
-            console.log('⚠️ Não foi possível configurar transcrição:', error);
+            console.log('⚠️ Não foi possível configurar transcrição:', error.message);
         }
     }
 
@@ -316,9 +499,19 @@ class MeetingRecordingBot {
                 }
                 
                 // Contar participantes
-                const participants = await this.page.$$('[data-participant-id], [jsname="V68bde"]');
-                this.participants = participants.length;
+                const participantSelectors = [
+                    '[data-participant-id]',
+                    '[jsname="V68bde"]',
+                    '[data-self-name]'
+                ];
                 
+                let participants = [];
+                for (const selector of participantSelectors) {
+                    participants = await this.page.$$(selector);
+                    if (participants.length > 0) break;
+                }
+                
+                this.participants = participants.length;
                 console.log(`👥 ${this.participants} participantes na reunião`);
                 
                 // Se só tem o bot, encerrar
@@ -338,7 +531,7 @@ class MeetingRecordingBot {
                 }
                 
             } catch (error) {
-                console.error('❌ Erro no monitoramento da gravação:', error);
+                console.error('❌ Erro no monitoramento da gravação:', error.message);
             }
         }, 30000); // A cada 30 segundos
     }
@@ -348,10 +541,21 @@ class MeetingRecordingBot {
             console.log('⏹️ Parando gravação...');
             
             try {
-                const stopBtn = await this.page.$('[aria-label*="Parar"], button:has-text("Parar gravação")');
+                const stopSelectors = [
+                    '[aria-label*="Parar"]',
+                    'button:has-text("Parar gravação")',
+                    '[data-tooltip*="Parar"]'
+                ];
+                
+                let stopBtn = null;
+                for (const selector of stopSelectors) {
+                    stopBtn = await this.page.$(selector);
+                    if (stopBtn) break;
+                }
+                
                 if (stopBtn) {
                     await stopBtn.click();
-                    await this.page.waitForTimeout(1000);
+                    await this.page.waitForTimeout(2000);
                     
                     const confirmBtn = await this.page.$('button:has-text("Parar")');
                     if (confirmBtn) {
@@ -363,7 +567,7 @@ class MeetingRecordingBot {
                 console.log('✅ Gravação parada');
                 
             } catch (error) {
-                console.error('❌ Erro ao parar gravação:', error);
+                console.error('❌ Erro ao parar gravação:', error.message);
             }
         }
         
@@ -375,15 +579,25 @@ class MeetingRecordingBot {
         console.log('🚪 Saindo da reunião...');
         
         try {
-            const leaveBtn = await this.page.$('[aria-label*="Sair"], [data-tooltip*="Sair"]') ||
-                            await this.page.$('button[jsname="CQylAd"]');
+            const leaveSelectors = [
+                '[aria-label*="Sair"]',
+                '[data-tooltip*="Sair"]',
+                'button[jsname="CQylAd"]',
+                '[aria-label*="Leave"]'
+            ];
+            
+            let leaveBtn = null;
+            for (const selector of leaveSelectors) {
+                leaveBtn = await this.page.$(selector);
+                if (leaveBtn) break;
+            }
             
             if (leaveBtn) {
                 await leaveBtn.click();
                 console.log('✅ Saiu da reunião');
             }
         } catch (error) {
-            console.error('❌ Erro ao sair da reunião:', error);
+            console.error('❌ Erro ao sair da reunião:', error.message);
         }
     }
 
@@ -393,16 +607,23 @@ class MeetingRecordingBot {
         try {
             this.isMonitoring = false;
             
-            if (this.page) await this.page.close();
-            if (this.browser) await this.browser.close();
+            if (this.page && !this.page.isClosed()) {
+                await this.page.close();
+            }
+            if (this.browser && this.browser.connected) {
+                await this.browser.close();
+            }
             
-            activeBots.delete(this.meeting.eventId);
-            monitoringIntervals.delete(this.meeting.eventId);
+            const storageKey = this.meeting.eventId || this.meeting.ment_id;
+            if (storageKey) {
+                activeBots.delete(storageKey);
+                monitoringIntervals.delete(storageKey);
+            }
             
             console.log('✅ Recursos limpos');
             
         } catch (error) {
-            console.error('❌ Erro na limpeza:', error);
+            console.error('❌ Erro na limpeza:', error.message);
         }
     }
 }
@@ -449,11 +670,26 @@ app.get('/', (req, res) => {
 app.post('/api/schedule-recording', async (req, res) => {
     const meetingData = req.body;
     
-    console.log('📅 Nova reunião agendada:', meetingData.title || meetingData.eventId);
+    const meetingTitle = meetingData.title || meetingData.ment_titulo || 'Reunião';
+    const eventId = meetingData.eventId || meetingData.ment_id || `meeting_${Date.now()}`;
+    
+    console.log('📅 Nova reunião agendada:', meetingTitle);
+    console.log('📋 Dados recebidos:', JSON.stringify(meetingData, null, 2));
+    
+    // Validar dados obrigatórios
+    const meetingUrl = meetingData.meetingUrl || meetingData.ment_zoom;
+    if (!eventId || !meetingUrl) {
+        return res.status(400).json({
+            success: false,
+            message: 'Dados obrigatórios faltando: eventId/ment_id e meetingUrl/ment_zoom são necessários',
+            received: meetingData
+        });
+    }
     
     // Armazenar reunião
-    meetings.set(meetingData.eventId, {
+    meetings.set(eventId, {
         ...meetingData,
+        eventId: eventId, // Garantir que tem eventId
         scheduled: new Date().toISOString(),
         status: 'monitoring'
     });
@@ -461,7 +697,7 @@ app.post('/api/schedule-recording', async (req, res) => {
     try {
         // Criar e inicializar bot
         const bot = new MeetingRecordingBot(meetingData);
-        activeBots.set(meetingData.eventId, bot);
+        activeBots.set(eventId, bot);
         
         await bot.initialize();
         await bot.startMonitoring();
@@ -471,13 +707,17 @@ app.post('/api/schedule-recording', async (req, res) => {
         res.json({
             success: true,
             message: 'Bot configurado com sucesso!',
-            eventId: meetingData.eventId,
+            eventId: eventId,
             status: 'monitoring',
             note: 'Bot está monitorando e entrará automaticamente quando a reunião iniciar.'
         });
         
     } catch (error) {
-        console.error('❌ Erro ao configurar bot:', error);
+        console.error('❌ Erro ao configurar bot:', error.message);
+        
+        // Limpar recursos em caso de erro
+        activeBots.delete(eventId);
+        meetings.delete(eventId);
         
         res.status(500).json({
             success: false,
@@ -512,7 +752,8 @@ app.get('/api/status/:eventId', (req, res) => {
             meeting: meeting,
             botActive: !!bot,
             isMonitoring: monitoringIntervals.has(eventId),
-            isRecording: bot ? bot.isRecording : false
+            isRecording: bot ? bot.isRecording : false,
+            participants: bot ? bot.participants : 0
         });
     } else {
         res.json({
@@ -529,10 +770,22 @@ app.delete('/api/stop/:eventId', async (req, res) => {
     
     if (bot) {
         await bot.cleanup();
+        meetings.delete(eventId);
         res.json({ success: true, message: 'Bot parado com sucesso' });
     } else {
         res.json({ success: false, message: 'Bot não encontrado' });
     }
+});
+
+// Endpoint de health check
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'healthy',
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        timestamp: new Date().toISOString(),
+        chrome: getChromeExecutablePath() || 'Puppeteer padrão'
+    });
 });
 
 // Iniciar servidor
@@ -541,6 +794,7 @@ app.listen(port, () => {
     console.log('🤖 BOT DE GRAVAÇÃO GOOGLE MEET ONLINE');
     console.log('🤖 =====================================');
     console.log(`🌐 Servidor rodando na porta: ${port}`);
+    console.log(`🔧 Chrome: ${getChromeExecutablePath() || 'Puppeteer padrão'}`);
     console.log(`📊 Funcionalidades:`);
     console.log(`   👀 Monitoramento automático de reuniões`);
     console.log(`   🚪 Entrada automática quando reunião inicia`);
@@ -559,4 +813,13 @@ process.on('SIGTERM', async () => {
     }
     
     process.exit(0);
+});
+
+// Tratamento de erros não capturados
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Erro não tratado:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('❌ Exceção não capturada:', error);
 });
