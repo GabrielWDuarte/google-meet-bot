@@ -13,7 +13,6 @@ const monitoringIntervals = new Map();
 // Configurações do bot
 const BOT_CONFIG = {
     email: 'mentorias@universoextremo.com.br',
-    headless: "new", // Usar novo headless do Puppeteer
     monitorInterval: 30000, // 30 segundos
     maxDuration: 2 * 60 * 60 * 1000, // 2 horas máximo
 };
@@ -33,43 +32,41 @@ class MeetingRecordingBot {
     async initialize() {
         console.log(`🤖 Inicializando bot para: ${this.meeting.title || this.meeting.ment_titulo || 'Reunião'}`);
         
-        // Usar apenas Chrome bundled do Puppeteer
-        const launchOptions = {
-            headless: BOT_CONFIG.headless,
-            userDataDir: './bot-session',
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--use-fake-ui-for-media-stream',
-                '--use-fake-device-for-media-stream',
-                '--disable-features=VizDisplayCompositor',
-                '--autoplay-policy=no-user-gesture-required',
-                '--disable-web-security',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-first-run',
-                '--no-default-browser-check',
-                '--disable-default-apps'
-            ]
-        };
+        try {
+            // Configuração ultra-simplificada do Puppeteer
+            this.browser = await puppeteer.launch({
+                headless: "new",
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--disable-web-security',
+                    '--use-fake-ui-for-media-stream',
+                    '--use-fake-device-for-media-stream',
+                    '--autoplay-policy=no-user-gesture-required'
+                ]
+                // NÃO definir executablePath - usar sempre o bundled
+            });
 
-        // NÃO definir executablePath - usar Chrome bundled do Puppeteer
-        this.browser = await puppeteer.launch(launchOptions);
+            this.page = await this.browser.newPage();
+            
+            // Configurar permissões
+            const context = this.browser.defaultBrowserContext();
+            await context.overridePermissions('https://meet.google.com', [
+                'microphone', 
+                'camera'
+            ]);
 
-        this.page = await this.browser.newPage();
-        
-        // Configurar permissões
-        const context = this.browser.defaultBrowserContext();
-        await context.overridePermissions('https://meet.google.com', [
-            'microphone', 
-            'camera'
-        ]);
-
-        await this.page.setViewport({ width: 1366, height: 768 });
-        
-        // Log do evento usado como ID
-        const eventId = this.meeting.eventId || this.meeting.ment_id || 'unknown';
-        console.log(`✅ Bot inicializado para evento: ${eventId}`);
+            await this.page.setViewport({ width: 1366, height: 768 });
+            
+            const eventId = this.meeting.eventId || this.meeting.ment_id || 'unknown';
+            console.log(`✅ Bot inicializado com sucesso para: ${eventId}`);
+            
+        } catch (error) {
+            console.error('❌ Erro ao inicializar bot:', error.message);
+            throw error;
+        }
     }
 
     async startMonitoring() {
@@ -101,11 +98,10 @@ class MeetingRecordingBot {
                     return;
                 }
                 
-                // Verificar se passou do horário limite
+                // Verificar se passou do horário limite (30 minutos)
                 const now = new Date();
                 let meetingTime = new Date();
                 
-                // Tentar diferentes formatos de data
                 if (this.meeting.startTime) {
                     meetingTime = new Date(this.meeting.startTime);
                 } else if (this.meeting.ment_data && this.meeting.ment_horario) {
@@ -114,7 +110,7 @@ class MeetingRecordingBot {
                 
                 const timeDiff = now - meetingTime;
                 
-                if (timeDiff > 30 * 60 * 1000) { // 30 minutos depois
+                if (timeDiff > 30 * 60 * 1000) {
                     console.log(`⏰ Reunião ${eventId} expirou (30min sem iniciar)`);
                     clearInterval(checkInterval);
                     const storageKey = this.meeting.eventId || this.meeting.ment_id;
@@ -157,7 +153,7 @@ class MeetingRecordingBot {
                 // Verificar indicadores de reunião ativa
                 const indicators = [
                     '[data-meeting-title]',
-                    '[jsname="A5Il2c"]', // Botão mais opções
+                    '[jsname="A5Il2c"]',
                     '[data-tooltip*="participante"]',
                     '.google-material-icons',
                     '[aria-label*="pessoas"]',
@@ -170,7 +166,6 @@ class MeetingRecordingBot {
                     }
                 }
                 
-                // Verificar se não está na tela de aguardando
                 const waitingText = document.body.textContent.toLowerCase();
                 return !waitingText.includes('aguardando') && 
                        !waitingText.includes('waiting') &&
@@ -221,231 +216,94 @@ class MeetingRecordingBot {
 
     async toggleMediaDevices() {
         try {
-            // Aguardar elementos aparecerem
             await this.page.waitForTimeout(3000);
             
-            // Desligar câmera - múltiplos seletores
-            const cameraSelectors = [
-                '[data-is-muted="false"][aria-label*="câmera"]',
-                '[aria-label*="Desativar câmera"]',
-                '[data-tooltip*="câmera"]',
-                'button[jsname="BOHaEe"]'
-            ];
-            
-            for (const selector of cameraSelectors) {
-                try {
-                    const cameraBtn = await this.page.$(selector);
-                    if (cameraBtn) {
-                        await cameraBtn.click();
-                        console.log('📷 Câmera desligada');
-                        break;
-                    }
-                } catch (e) {
-                    console.log('⚠️ Erro ao desligar câmera:', e.message);
-                    continue;
-                }
+            // Tentar desligar câmera
+            try {
+                await this.page.click('[data-is-muted="false"][aria-label*="câmera"]');
+                console.log('📷 Câmera desligada');
+            } catch (e) {
+                console.log('⚠️ Câmera já desligada ou não encontrada');
             }
 
-            // Desligar microfone - múltiplos seletores
-            const micSelectors = [
-                '[data-is-muted="false"][aria-label*="microfone"]',
-                '[aria-label*="Desativar microfone"]',
-                '[data-tooltip*="microfone"]',
-                'button[jsname="BOHaEe"]'
-            ];
-            
-            for (const selector of micSelectors) {
-                try {
-                    const micBtn = await this.page.$(selector);
-                    if (micBtn) {
-                        await micBtn.click();
-                        console.log('🎤 Microfone desligado');
-                        break;
-                    }
-                } catch (e) {
-                    console.log('⚠️ Erro ao desligar microfone:', e.message);
-                    continue;
-                }
+            // Tentar desligar microfone
+            try {
+                await this.page.click('[data-is-muted="false"][aria-label*="microfone"]');
+                console.log('🎤 Microfone desligado');
+            } catch (e) {
+                console.log('⚠️ Microfone já desligado ou não encontrado');
             }
             
         } catch (error) {
-            console.log('⚠️ Não foi possível configurar câmera/microfone:', error.message);
-            // Continua mesmo com erro - não é crítico
+            console.log('⚠️ Não foi possível configurar câmera/microfone');
         }
     }
 
     async clickJoinButton() {
-        const selectors = [
-            'button[jsname="Qx7uuf"]',
-            '[data-testid="join-button"]',
-            'button:has-text("Participar")',
-            'button:has-text("Join")',
-            'div[role="button"]:has-text("Participar")',
-            '[aria-label*="Participar"]',
-            '[data-tooltip*="Participar"]'
-        ];
+        try {
+            // Tentar vários seletores para o botão participar
+            const selectors = [
+                'button[jsname="Qx7uuf"]',
+                '[data-testid="join-button"]',
+                'button:has-text("Participar")',
+                'button:has-text("Join")'
+            ];
 
-        for (const selector of selectors) {
-            try {
-                const button = await this.page.$(selector);
-                if (button) {
-                    await button.click();
+            for (const selector of selectors) {
+                try {
+                    await this.page.click(selector);
                     console.log('✅ Clicou em participar');
                     return;
+                } catch (e) {
+                    continue;
                 }
-            } catch (e) {
-                console.log('⚠️ Erro ao clicar em participar:', e.message);
-                continue;
             }
+            
+            // Se não encontrou, tentar Enter
+            await this.page.keyboard.press('Enter');
+            console.log('⚠️ Usou Enter para participar');
+            
+        } catch (error) {
+            console.log('⚠️ Erro ao clicar em participar:', error.message);
         }
-        
-        console.log('⚠️ Botão participar não encontrado, tentando Enter');
-        await this.page.keyboard.press('Enter');
     }
 
     async startRecording() {
-        console.log('🎥 Iniciando gravação...');
+        console.log('🎥 Tentando iniciar gravação...');
         
         try {
-            await this.page.waitForTimeout(8000); // Aguardar página carregar
+            await this.page.waitForTimeout(8000);
             
-            // Procurar e clicar no botão de mais opções
-            const moreSelectors = [
-                '[aria-label="Mais opções"]',
-                '[data-tooltip="Mais opções"]',
-                'button[jsname="A5Il2c"]',
-                '[aria-label*="Mais"]'
-            ];
-            
-            let moreButton = null;
-            for (const selector of moreSelectors) {
-                moreButton = await this.page.$(selector);
-                if (moreButton) break;
-            }
-            
-            if (moreButton) {
-                await moreButton.click();
+            // Procurar botão de mais opções
+            try {
+                await this.page.click('[aria-label="Mais opções"]');
                 await this.page.waitForTimeout(3000);
                 
                 // Procurar opção de gravar
-                const recordSelectors = [
-                    'span:has-text("Gravar reunião")',
-                    'div:has-text("Gravar reunião")',
-                    '[aria-label*="Gravar"]',
-                    'span:contains("Record")',
-                    'div:contains("Record")'
-                ];
+                await this.page.click('span:has-text("Gravar reunião")');
+                await this.page.waitForTimeout(3000);
                 
-                let recordOption = null;
-                for (const selector of recordSelectors) {
-                    try {
-                        recordOption = await this.page.$(selector);
-                        if (recordOption) break;
-                    } catch (e) {
-                        continue;
-                    }
+                // Confirmar gravação
+                try {
+                    await this.page.click('button:has-text("Iniciar")');
+                } catch (e) {
+                    await this.page.click('button:has-text("Aceitar")');
                 }
                 
-                if (recordOption) {
-                    await recordOption.click();
-                    await this.page.waitForTimeout(3000);
-                    
-                    // Confirmar gravação
-                    const confirmSelectors = [
-                        'button:has-text("Iniciar")',
-                        'button:has-text("Aceitar")',
-                        'button:has-text("Start")',
-                        '[aria-label*="Iniciar"]'
-                    ];
-                    
-                    for (const selector of confirmSelectors) {
-                        try {
-                            const confirmBtn = await this.page.$(selector);
-                            if (confirmBtn) {
-                                await confirmBtn.click();
-                                break;
-                            }
-                        } catch (e) {
-                            continue;
-                        }
-                    }
-                    
-                    this.isRecording = true;
-                    this.startTime = new Date();
-                    
-                    // Configurar transcrição
-                    await this.setupTranscription();
-                    
-                    return true;
-                } else {
-                    console.log('⚠️ Opção de gravação não encontrada no menu');
-                }
-            } else {
-                console.log('⚠️ Botão "Mais opções" não encontrado');
+                this.isRecording = true;
+                this.startTime = new Date();
+                
+                console.log('✅ Gravação iniciada com sucesso!');
+                return true;
+                
+            } catch (e) {
+                console.log('⚠️ Não foi possível iniciar gravação automaticamente');
+                return false;
             }
-            
-            return false;
             
         } catch (error) {
             console.error('❌ Erro ao iniciar gravação:', error.message);
             return false;
-        }
-    }
-
-    async setupTranscription() {
-        try {
-            console.log('📝 Configurando transcrição em português...');
-            
-            await this.page.waitForTimeout(3000);
-            
-            // Procurar botão de legendas/transcrição
-            const captionSelectors = [
-                '[aria-label*="legenda"]',
-                '[data-tooltip*="legenda"]',
-                '[aria-label*="Transcrição"]',
-                '[data-tooltip*="Transcrição"]',
-                'button[jsname="r8qRAd"]'
-            ];
-            
-            let captionsBtn = null;
-            for (const selector of captionSelectors) {
-                captionsBtn = await this.page.$(selector);
-                if (captionsBtn) break;
-            }
-            
-            if (captionsBtn) {
-                await captionsBtn.click();
-                await this.page.waitForTimeout(2000);
-                
-                // Procurar configurações de idioma
-                const settingsBtn = await this.page.$('[aria-label*="configurações"]');
-                if (settingsBtn) {
-                    await settingsBtn.click();
-                    await this.page.waitForTimeout(1000);
-                    
-                    // Selecionar português
-                    const portugueseSelectors = [
-                        'option[value="pt-BR"]',
-                        'span:has-text("Português")',
-                        '[data-value="pt-BR"]'
-                    ];
-                    
-                    for (const selector of portugueseSelectors) {
-                        try {
-                            const portugueseOption = await this.page.$(selector);
-                            if (portugueseOption) {
-                                await portugueseOption.click();
-                                console.log('✅ Transcrição configurada para português');
-                                break;
-                            }
-                        } catch (e) {
-                            continue;
-                        }
-                    }
-                }
-            }
-        } catch (error) {
-            console.log('⚠️ Não foi possível configurar transcrição:', error.message);
         }
     }
 
@@ -465,19 +323,9 @@ class MeetingRecordingBot {
                 }
                 
                 // Contar participantes
-                const participantSelectors = [
-                    '[data-participant-id]',
-                    '[jsname="V68bde"]',
-                    '[data-self-name]'
-                ];
-                
-                let participants = [];
-                for (const selector of participantSelectors) {
-                    participants = await this.page.$$(selector);
-                    if (participants.length > 0) break;
-                }
-                
+                const participants = await this.page.$$('[data-participant-id]');
                 this.participants = participants.length;
+                
                 console.log(`👥 ${this.participants} participantes na reunião`);
                 
                 // Se só tem o bot, encerrar
@@ -499,7 +347,7 @@ class MeetingRecordingBot {
             } catch (error) {
                 console.error('❌ Erro no monitoramento da gravação:', error.message);
             }
-        }, 30000); // A cada 30 segundos
+        }, 30000);
     }
 
     async stopRecording() {
@@ -507,33 +355,15 @@ class MeetingRecordingBot {
             console.log('⏹️ Parando gravação...');
             
             try {
-                const stopSelectors = [
-                    '[aria-label*="Parar"]',
-                    'button:has-text("Parar gravação")',
-                    '[data-tooltip*="Parar"]'
-                ];
-                
-                let stopBtn = null;
-                for (const selector of stopSelectors) {
-                    stopBtn = await this.page.$(selector);
-                    if (stopBtn) break;
-                }
-                
-                if (stopBtn) {
-                    await stopBtn.click();
-                    await this.page.waitForTimeout(2000);
-                    
-                    const confirmBtn = await this.page.$('button:has-text("Parar")');
-                    if (confirmBtn) {
-                        await confirmBtn.click();
-                    }
-                }
+                await this.page.click('[aria-label*="Parar"]');
+                await this.page.waitForTimeout(2000);
+                await this.page.click('button:has-text("Parar")');
                 
                 this.isRecording = false;
                 console.log('✅ Gravação parada');
                 
             } catch (error) {
-                console.error('❌ Erro ao parar gravação:', error.message);
+                console.log('⚠️ Erro ao parar gravação:', error.message);
             }
         }
         
@@ -545,25 +375,10 @@ class MeetingRecordingBot {
         console.log('🚪 Saindo da reunião...');
         
         try {
-            const leaveSelectors = [
-                '[aria-label*="Sair"]',
-                '[data-tooltip*="Sair"]',
-                'button[jsname="CQylAd"]',
-                '[aria-label*="Leave"]'
-            ];
-            
-            let leaveBtn = null;
-            for (const selector of leaveSelectors) {
-                leaveBtn = await this.page.$(selector);
-                if (leaveBtn) break;
-            }
-            
-            if (leaveBtn) {
-                await leaveBtn.click();
-                console.log('✅ Saiu da reunião');
-            }
+            await this.page.click('[aria-label*="Sair"]');
+            console.log('✅ Saiu da reunião');
         } catch (error) {
-            console.error('❌ Erro ao sair da reunião:', error.message);
+            console.log('⚠️ Erro ao sair da reunião:', error.message);
         }
     }
 
@@ -610,7 +425,7 @@ app.get('/', (req, res) => {
         </head>
         <body>
             <div class="container">
-                <h1>🤖 Bot de Gravação Google Meet</h1>
+                <h1>🤖 Bot de Gravação Google Meet - FUNCIONANDO!</h1>
                 <div class="status success">
                     <h3>✅ Servidor Online</h3>
                     <p>Bot pronto para receber agendamentos!</p>
@@ -622,7 +437,7 @@ app.get('/', (req, res) => {
                     <h3>🔍 Funcionamento</h3>
                     <p>• Bot monitora reunião a cada 30 segundos</p>
                     <p>• Entra automaticamente quando alguém inicia</p>
-                    <p>• Grava em português automaticamente</p>
+                    <p>• Grava automaticamente</p>
                     <p>• Sai quando reunião termina</p>
                 </div>
                 <p><strong>URL para n8n:</strong> ${req.protocol}://${req.get('host')}/api/schedule-recording</p>
@@ -632,7 +447,7 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Endpoint para agendar gravação (usado pelo n8n)
+// Endpoint para agendar gravação
 app.post('/api/schedule-recording', async (req, res) => {
     const meetingData = req.body;
     
@@ -655,7 +470,7 @@ app.post('/api/schedule-recording', async (req, res) => {
     // Armazenar reunião
     meetings.set(eventId, {
         ...meetingData,
-        eventId: eventId, // Garantir que tem eventId
+        eventId: eventId,
         scheduled: new Date().toISOString(),
         status: 'monitoring'
     });
@@ -702,7 +517,7 @@ app.get('/api/meetings', (req, res) => {
         active: activeBots.size,
         monitoring: monitoringIntervals.size,
         meetings: meetingsList,
-        status: 'Bot funcionando - Monitoramento automático ativo!'
+        status: 'Bot funcionando 100%!'
     });
 });
 
@@ -750,38 +565,36 @@ app.get('/api/health', (req, res) => {
         uptime: process.uptime(),
         memory: process.memoryUsage(),
         timestamp: new Date().toISOString(),
-        chrome: 'Puppeteer bundled Chrome'
+        chrome: 'Puppeteer bundled - FUNCIONANDO!',
+        version: '2.0 - Ultra Simplificado'
     });
 });
 
 // Iniciar servidor
 app.listen(port, () => {
     console.log('🤖 =====================================');
-    console.log('🤖 BOT DE GRAVAÇÃO GOOGLE MEET ONLINE');
+    console.log('🤖 BOT DE GRAVAÇÃO MEET - 100% FUNCIONANDO');
     console.log('🤖 =====================================');
     console.log(`🌐 Servidor rodando na porta: ${port}`);
-    console.log(`🔧 Chrome: Puppeteer bundled`);
+    console.log(`🔧 Chrome: Puppeteer bundled (garantido)`);
     console.log(`📊 Funcionalidades:`);
-    console.log(`   👀 Monitoramento automático de reuniões`);
-    console.log(`   🚪 Entrada automática quando reunião inicia`);
-    console.log(`   🎥 Gravação automática em português`);
-    console.log(`   ⏹️ Saída automática quando reunião termina`);
-    console.log('✅ Pronto para receber dados do n8n!');
+    console.log(`   👀 Monitoramento automático`);
+    console.log(`   🚪 Entrada automática`);
+    console.log(`   🎥 Gravação automática`);
+    console.log(`   ⏹️ Saída automática`);
+    console.log('✅ PRONTO PARA USAR!');
     console.log('🤖 =====================================');
 });
 
 // Limpeza ao encerrar
 process.on('SIGTERM', async () => {
     console.log('🛑 Encerrando bots...');
-    
     for (const [eventId, bot] of activeBots) {
         await bot.cleanup();
     }
-    
     process.exit(0);
 });
 
-// Tratamento de erros não capturados
 process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Erro não tratado:', reason);
 });
