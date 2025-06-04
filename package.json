@@ -12,9 +12,5 @@
   },
   "engines": {
     "node": "18.x"
-  },
-  "puppeteer": {
-    "skipDownload": false,
-    "executablePath": "/usr/bin/chromium-browser"
   }
 }
