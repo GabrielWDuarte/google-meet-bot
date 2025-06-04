@@ -1,7 +1,7 @@
 {
   "name": "google-meet-bot",
-  "version": "1.0.0",
-  "description": "Bot automático para gravação Google Meet",
+  "version": "3.0.0",
+  "description": "Bot automático para gravação Google Meet - Versão Cookies",
   "main": "app.js",
   "scripts": {
     "start": "node app.js"
@@ -12,5 +12,7 @@
   },
   "engines": {
     "node": "18.x"
-  }
+  },
+  "author": "Universo Extremo",
+  "license": "MIT"
 }

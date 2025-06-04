@@ -1,17 +1,21 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
+const fs = require('fs');
+const path = require('path');
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(express.json());
 
+// 📊 Armazenamento global
 const meetings = new Map();
 const activeBots = new Map();
-const monitoringIntervals = new Map();
+const cookiesData = new Map(); // Cache de cookies
 
 class MeetingRecordingBot {
-    constructor(meetingData) {
+    constructor(meetingData, botId) {
         this.meeting = meetingData;
+        this.botId = botId; // ID único para cada bot
         this.browser = null;
         this.page = null;
         this.isRecording = false;
@@ -22,7 +26,7 @@ class MeetingRecordingBot {
 
     log(message, type = 'info') {
         const timestamp = new Date().toISOString();
-        const logEntry = `${timestamp} [${type.toUpperCase()}] ${message}`;
+        const logEntry = `[BOT-${this.botId}] ${timestamp} [${type.toUpperCase()}] ${message}`;
         console.log(logEntry);
         this.debugLogs.push(logEntry);
     }
@@ -31,7 +35,6 @@ class MeetingRecordingBot {
         this.log(`Inicializando bot para: ${this.meeting.title || 'Reunião'}`);
         
         try {
-            // 🚀 Configuração otimizada para login automático
             this.browser = await puppeteer.launch({
                 headless: "new",
                 args: [
@@ -39,28 +42,24 @@ class MeetingRecordingBot {
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-web-security',
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-extensions',
-                    '--no-first-run',
-                    '--disable-default-apps'
+                    '--disable-blink-features=AutomationControlled'
                 ]
             });
 
             this.page = await this.browser.newPage();
-            
-            // 🎭 Configurar como usuário real
-            await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+            await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
             await this.page.setViewport({ width: 1366, height: 768 });
             
-            // 🔐 FAZER LOGIN AUTOMÁTICO
-            const loginSuccess = await this.performSecureLogin();
+            // 🍪 Carregar cookies
+            const cookiesLoaded = await this.loadCookies();
             
-            if (!loginSuccess) {
-                throw new Error('Falha no login automático');
+            if (cookiesLoaded) {
+                this.log('✅ Cookies carregados - bot autenticado!');
+                this.isLoggedIn = true;
+                return true;
+            } else {
+                throw new Error('Cookies não configurados - acesse /setup');
             }
-            
-            this.log('Bot inicializado e autenticado com sucesso!');
-            return true;
             
         } catch (error) {
             this.log(`Erro na inicialização: ${error.message}`, 'error');
@@ -68,263 +67,91 @@ class MeetingRecordingBot {
         }
     }
 
-    async performSecureLogin() {
+    async loadCookies() {
         try {
-            this.log('Iniciando login automático seguro melhorado...');
+            // 1️⃣ Tentar carregar cookies do cache
+            if (cookiesData.has('google_cookies')) {
+                this.log('Carregando cookies do cache...');
+                const cookies = cookiesData.get('google_cookies');
+                return await this.applyCookies(cookies);
+            }
             
-            // 📧 Credenciais das variáveis de ambiente
-            const email = process.env.GOOGLE_EMAIL;
-            const password = process.env.GOOGLE_PASSWORD;
+            // 2️⃣ Tentar carregar cookies das variáveis de ambiente
+            if (process.env.GOOGLE_COOKIES) {
+                this.log('Carregando cookies das variáveis de ambiente...');
+                const cookies = JSON.parse(process.env.GOOGLE_COOKIES);
+                cookiesData.set('google_cookies', cookies); // Salvar no cache
+                return await this.applyCookies(cookies);
+            }
             
-            if (!email || !password) {
-                this.log('ERRO: Credenciais não configuradas nas variáveis de ambiente', 'error');
+            // 3️⃣ Tentar carregar cookies de arquivo
+            const cookiesPath = path.join(__dirname, 'cookies.json');
+            if (fs.existsSync(cookiesPath)) {
+                this.log('Carregando cookies do arquivo...');
+                const cookiesFile = fs.readFileSync(cookiesPath, 'utf8');
+                const cookies = JSON.parse(cookiesFile);
+                cookiesData.set('google_cookies', cookies); // Salvar no cache
+                return await this.applyCookies(cookies);
+            }
+            
+            this.log('Nenhum cookie encontrado', 'error');
+            return false;
+            
+        } catch (error) {
+            this.log(`Erro ao carregar cookies: ${error.message}`, 'error');
+            return false;
+        }
+    }
+
+    async applyCookies(cookies) {
+        try {
+            if (!cookies || cookies.length === 0) {
                 return false;
             }
             
-            this.log(`Fazendo login com: ${email.replace(/(.{3}).*@/, '$1***@')}`);
+            this.log(`Aplicando ${cookies.length} cookies...`);
             
-            // 🌐 Ir para página de login do Google
-            this.log('Navegando para página de login...');
-            await this.page.goto('https://accounts.google.com/signin/v2/identifier', {
-                waitUntil: 'networkidle0',
+            // Ir para Google primeiro
+            await this.page.goto('https://accounts.google.com', {
+                waitUntil: 'networkidle2',
                 timeout: 30000
             });
             
-            // ⏰ Aguardar página carregar completamente
-            await this.page.waitForTimeout(3000);
+            // Aplicar cookies
+            await this.page.setCookie(...cookies);
             
-            // 📧 PASSO 1: Aguardar e inserir email
-            this.log('Aguardando campo de email...');
+            // Testar se funcionam
+            await this.page.goto('https://myaccount.google.com', {
+                waitUntil: 'networkidle2',
+                timeout: 30000
+            });
             
-            // Múltiplos seletores para o campo de email
-            const emailSelectors = [
-                '#identifierId',
-                'input[type="email"]',
-                'input[name="identifier"]',
-                '[data-initial-value=""]'
-            ];
+            const isLoggedIn = await this.page.evaluate(() => {
+                return !document.body.textContent.includes('Sign in') &&
+                       !document.body.textContent.includes('Fazer login');
+            });
             
-            let emailField = null;
-            for (const selector of emailSelectors) {
-                try {
-                    await this.page.waitForSelector(selector, { timeout: 5000 });
-                    emailField = await this.page.$(selector);
-                    if (emailField) {
-                        this.log(`Campo de email encontrado: ${selector}`);
-                        break;
-                    }
-                } catch (e) {
-                    this.log(`Seletor ${selector} não encontrado, tentando próximo...`);
-                }
-            }
-            
-            if (!emailField) {
-                this.log('ERRO: Campo de email não encontrado com nenhum seletor', 'error');
-                return false;
-            }
-            
-            // Limpar campo e inserir email
-            await emailField.click({ clickCount: 3 }); // Selecionar tudo
-            await emailField.type(email, { delay: 150 });
-            
-            this.log('Email inserido com sucesso');
-            
-            // ▶️ Clicar em "Próximo" - múltiplos seletores
-            const nextButtonSelectors = [
-                '#identifierNext',
-                'button[jsname="LgbsSe"]',
-                '[data-primary="true"]',
-                'button:contains("Next")',
-                'button:contains("Próximo")'
-            ];
-            
-            let nextButton = null;
-            for (const selector of nextButtonSelectors) {
-                try {
-                    nextButton = await this.page.$(selector);
-                    if (nextButton) {
-                        this.log(`Botão "Próximo" encontrado: ${selector}`);
-                        break;
-                    }
-                } catch (e) {
-                    continue;
-                }
-            }
-            
-            if (nextButton) {
-                await nextButton.click();
-                this.log('Clicou em "Próximo" após email');
-            } else {
-                // Fallback: usar Enter
-                await this.page.keyboard.press('Enter');
-                this.log('Usou Enter como fallback para próximo');
-            }
-            
-            // ⏰ Aguardar transição para página de senha
-            await this.page.waitForTimeout(4000);
-            
-            // 🔐 PASSO 2: Aguardar e inserir senha
-            this.log('Aguardando campo de senha...');
-            
-            // Múltiplos seletores para o campo de senha
-            const passwordSelectors = [
-                'input[name="password"]',
-                'input[type="password"]',
-                '#password',
-                '[data-initial-value=""]:not([type="email"])'
-            ];
-            
-            let passwordField = null;
-            for (const selector of passwordSelectors) {
-                try {
-                    await this.page.waitForSelector(selector, { timeout: 10000 });
-                    passwordField = await this.page.$(selector);
-                    if (passwordField) {
-                        this.log(`Campo de senha encontrado: ${selector}`);
-                        break;
-                    }
-                } catch (e) {
-                    this.log(`Seletor de senha ${selector} não encontrado, tentando próximo...`);
-                }
-            }
-            
-            if (!passwordField) {
-                this.log('ERRO: Campo de senha não encontrado', 'error');
-                
-                // Debug: capturar estado atual da página
-                const currentUrl = this.page.url();
-                const pageTitle = await this.page.title();
-                this.log(`URL atual: ${currentUrl}`, 'debug');
-                this.log(`Título da página: ${pageTitle}`, 'debug');
-                
-                // Verificar se há mensagens de erro
-                const errorMessages = await this.page.$eval('[jsname="B34EJ"], .LXRPh, [data-error="true"]', 
-                    elements => elements.map(el => el.textContent.trim())
-                ).catch(() => []);
-                
-                if (errorMessages.length > 0) {
-                    this.log(`Mensagens de erro encontradas: ${errorMessages.join(', ')}`, 'error');
-                }
-                
-                return false;
-            }
-            
-            // Inserir senha
-            await passwordField.click();
-            await passwordField.type(password, { delay: 150 });
-            
-            this.log('Senha inserida com sucesso');
-            
-            // ▶️ Clicar em "Próximo" para senha
-            const passwordNextSelectors = [
-                '#passwordNext',
-                'button[jsname="LgbsSe"]',
-                '[data-primary="true"]',
-                'button:contains("Next")',
-                'button:contains("Próximo")'
-            ];
-            
-            let passwordNext = null;
-            for (const selector of passwordNextSelectors) {
-                try {
-                    passwordNext = await this.page.$(selector);
-                    if (passwordNext) {
-                        this.log(`Botão "Próximo" da senha encontrado: ${selector}`);
-                        break;
-                    }
-                } catch (e) {
-                    continue;
-                }
-            }
-            
-            if (passwordNext) {
-                await passwordNext.click();
-                this.log('Clicou em "Próximo" após senha');
-            } else {
-                // Fallback: usar Enter
-                await this.page.keyboard.press('Enter');
-                this.log('Usou Enter como fallback para senha');
-            }
-            
-            // ⏰ Aguardar login ser processado (mais tempo)
-            this.log('Aguardando autenticação...');
-            await this.page.waitForTimeout(8000);
-            
-            // ✅ Verificar se login foi bem-sucedido
-            const currentUrl = this.page.url();
-            this.log(`URL após login: ${currentUrl}`, 'debug');
-            
-            // Múltiplas formas de verificar sucesso
-            const loginSuccessIndicators = [
-                'myaccount.google.com',
-                'accounts.google.com/ManageAccount',
-                'accounts.google.com/b/0/ManageAccount'
-            ];
-            
-            const isLoginSuccessful = loginSuccessIndicators.some(indicator => 
-                currentUrl.includes(indicator)
-            ) || !currentUrl.includes('signin');
-            
-            if (isLoginSuccessful) {
-                this.log('✅ Login realizado com sucesso!');
-                this.isLoggedIn = true;
-                
-                // 🍪 Aguardar cookies serem salvos
-                await this.page.waitForTimeout(3000);
-                
+            if (isLoggedIn) {
+                this.log('✅ Cookies válidos - autenticação bem-sucedida!');
                 return true;
             } else {
-                this.log('❌ Login falhou - ainda na página de autenticação', 'error');
-                
-                // 🔍 Verificar erros específicos
-                const errorElements = await this.page.$eval(
-                    '[jsname="B34EJ"], .LXRPh, [data-error="true"], .dEOOab',
-                    elements => elements.map(el => el.textContent.trim()).filter(text => text.length > 0)
-                ).catch(() => []);
-                
-                if (errorElements.length > 0) {
-                    this.log(`Erros de login detectados: ${errorElements.join(', ')}`, 'error');
-                }
-                
-                // Verificar se há captcha ou verificação adicional
-                const hasCaptcha = await this.page.$('#captcha') !== null;
-                const has2FA = await this.page.$('[data-send-method]') !== null;
-                
-                if (hasCaptcha) {
-                    this.log('❌ Captcha detectado - login automático não é possível', 'error');
-                }
-                
-                if (has2FA) {
-                    this.log('❌ Verificação em duas etapas detectada', 'error');
-                }
-                
+                this.log('❌ Cookies expirados ou inválidos');
                 return false;
             }
             
         } catch (error) {
-            this.log(`Erro durante login: ${error.message}`, 'error');
-            
-            // Debug adicional em caso de erro
-            try {
-                const currentUrl = this.page.url();
-                const pageTitle = await this.page.title();
-                this.log(`URL no erro: ${currentUrl}`, 'debug');
-                this.log(`Título no erro: ${pageTitle}`, 'debug');
-            } catch (debugError) {
-                this.log(`Erro no debug: ${debugError.message}`, 'debug');
-            }
-            
+            this.log(`Erro ao aplicar cookies: ${error.message}`, 'error');
             return false;
         }
     }
 
     async startMonitoring() {
         if (!this.isLoggedIn) {
-            this.log('Bot não está autenticado - abortando monitoramento', 'error');
+            this.log('Bot não está autenticado - abortando', 'error');
             return;
         }
         
-        this.log('Iniciando monitoramento autenticado...');
+        this.log('Iniciando monitoramento da reunião...');
         this.isMonitoring = true;
         
         const checkInterval = setInterval(async () => {
@@ -334,185 +161,113 @@ class MeetingRecordingBot {
                     return;
                 }
 
-                this.log('Verificando reunião (como usuário autenticado)...');
+                this.log('Verificando se reunião está ativa...');
+                const meetingStatus = await this.checkMeeting();
                 
-                const meetingStatus = await this.checkIfMeetingStarted();
-                
-                if (meetingStatus.isActive) {
-                    this.log(`Reunião detectada como ativa! Motivo: ${meetingStatus.reason}`);
+                if (meetingStatus.shouldJoin) {
+                    this.log(`Reunião ativa! Entrando: ${meetingStatus.reason}`);
                     clearInterval(checkInterval);
                     await this.joinAndRecord();
                     return;
                 } else {
-                    this.log(`Reunião não ativa. Motivo: ${meetingStatus.reason}`);
+                    this.log(`Aguardando: ${meetingStatus.reason}`);
                 }
                 
             } catch (error) {
                 this.log(`Erro no monitoramento: ${error.message}`, 'error');
             }
-        }, 30000);
-        
-        const storageKey = this.meeting.eventId || this.meeting.ment_id;
-        if (storageKey) {
-            monitoringIntervals.set(storageKey, checkInterval);
-        }
+        }, 30000); // Verificar a cada 30 segundos
     }
 
-    async checkIfMeetingStarted() {
+    async checkMeeting() {
         try {
             const meetingUrl = this.meeting.meetingUrl || this.meeting.ment_zoom || '';
             
             if (!meetingUrl || !meetingUrl.includes('meet.google.com')) {
-                return { isActive: false, reason: 'URL inválida ou não é do Google Meet' };
+                return { shouldJoin: false, reason: 'URL inválida' };
             }
 
-            this.log(`Navegando para reunião como usuário autenticado: ${meetingUrl}`);
+            this.log(`Verificando: ${meetingUrl}`);
             
-            // 🔐 Ir para reunião já logado
             await this.page.goto(meetingUrl, { 
                 timeout: 30000,
                 waitUntil: 'networkidle2'
             });
             
-            // ⏰ Aguardar página carregar completamente
-            await this.page.waitForTimeout(5000);
+            await this.page.waitForTimeout(3000);
             
-            // 🔍 Análise como usuário autenticado
-            const meetingAnalysis = await this.page.evaluate(() => {
-                const analysis = {
-                    url: window.location.href,
-                    title: document.title,
+            const analysis = await this.page.evaluate(() => {
+                const result = {
                     hasJoinButton: false,
-                    hasRecordButton: false,
-                    hasParticipants: false,
                     isInMeeting: false,
                     participantCount: 0,
-                    userRole: 'unknown',
-                    messages: []
+                    waitingMessages: []
                 };
                 
-                // Verificar se está na sala de reunião
-                analysis.isInMeeting = document.querySelector('[data-self-video]') !== null ||
-                                     document.querySelector('.participants-container') !== null;
+                // Verificar se já está na reunião
+                result.isInMeeting = document.querySelector('[data-self-video]') !== null;
                 
                 // Verificar botão de entrada
                 const joinButtons = [
                     'button[jsname="Qx7uuf"]',
-                    '[data-is-touch-wrapper="true"]',
-                    'button[aria-label*="Join"]',
-                    'button[aria-label*="Participar"]'
+                    '[data-is-touch-wrapper="true"]'
                 ];
                 
-                analysis.hasJoinButton = joinButtons.some(selector => 
-                    document.querySelector(selector) !== null
-                );
-                
-                // Verificar botão de gravação (só visível para usuários com permissão)
-                const recordSelectors = [
-                    '[aria-label*="Record"]',
-                    '[aria-label*="Gravar"]',
-                    '[data-tooltip*="Record"]',
-                    '[data-tooltip*="Gravar"]'
-                ];
-                
-                analysis.hasRecordButton = recordSelectors.some(selector => 
+                result.hasJoinButton = joinButtons.some(selector => 
                     document.querySelector(selector) !== null
                 );
                 
                 // Contar participantes
-                const participants = document.querySelectorAll('[data-participant-id]');
-                analysis.participantCount = participants.length;
-                analysis.hasParticipants = participants.length > 1;
+                result.participantCount = document.querySelectorAll('[data-participant-id]').length;
                 
-                // Verificar mensagens na tela
+                // Verificar mensagens
                 const bodyText = document.body.textContent.toLowerCase();
-                
-                if (bodyText.includes('waiting for others') || bodyText.includes('aguardando outros')) {
-                    analysis.messages.push('Aguardando outros participantes');
+                if (bodyText.includes('waiting') || bodyText.includes('aguardando')) {
+                    result.waitingMessages.push('Aguardando outros participantes');
                 }
                 
-                if (bodyText.includes('you\'re the only one here') || bodyText.includes('você é o único')) {
-                    analysis.messages.push('Único participante na reunião');
-                }
-                
-                if (bodyText.includes('meeting hasn\'t started') || bodyText.includes('reunião não começou')) {
-                    analysis.messages.push('Reunião ainda não iniciou');
-                }
-                
-                return analysis;
+                return result;
             });
             
-            this.log(`Análise da reunião: ${JSON.stringify(meetingAnalysis, null, 2)}`, 'debug');
-            
-            // 🎯 Lógica de decisão melhorada para usuário autenticado
-            if (meetingAnalysis.isInMeeting) {
-                return { 
-                    isActive: true, 
-                    reason: `Já na reunião com ${meetingAnalysis.participantCount} participantes. Botão de gravação: ${meetingAnalysis.hasRecordButton ? 'DISPONÍVEL' : 'NÃO ENCONTRADO'}` 
-                };
+            // Lógica de decisão
+            if (analysis.isInMeeting) {
+                return { shouldJoin: true, reason: `Já na reunião com ${analysis.participantCount} participantes` };
             }
             
-            if (meetingAnalysis.hasJoinButton) {
-                return { 
-                    isActive: true, 
-                    reason: `Reunião pronta para entrada. Botão encontrado.` 
-                };
+            if (analysis.hasJoinButton && analysis.participantCount > 0) {
+                return { shouldJoin: true, reason: `Reunião com ${analysis.participantCount} participantes` };
             }
             
-            if (meetingAnalysis.messages.length > 0) {
-                return { 
-                    isActive: false, 
-                    reason: `Aguardando: ${meetingAnalysis.messages.join(', ')}` 
-                };
+            if (analysis.hasJoinButton) {
+                return { shouldJoin: true, reason: 'Reunião disponível para entrada' };
             }
             
-            return { 
-                isActive: false, 
-                reason: 'Reunião não está pronta para entrada' 
-            };
+            return { shouldJoin: false, reason: 'Reunião ainda não iniciou' };
             
         } catch (error) {
             this.log(`Erro ao verificar reunião: ${error.message}`, 'error');
-            return { isActive: false, reason: `Erro: ${error.message}` };
+            return { shouldJoin: false, reason: `Erro: ${error.message}` };
         }
     }
 
     async joinAndRecord() {
         try {
-            this.log('Entrando na reunião como usuário autenticado...');
+            this.log('Entrando na reunião...');
             
-            const meetingUrl = this.meeting.meetingUrl || this.meeting.ment_zoom || '';
+            // Tentar entrar
+            const joined = await this.tryJoin();
             
-            // 🔐 Garantir que estamos na página da reunião
-            if (!this.page.url().includes(meetingUrl)) {
-                await this.page.goto(meetingUrl, {
-                    timeout: 30000,
-                    waitUntil: 'networkidle2'
-                });
-            }
-            
-            // 🚪 Tentar entrar na reunião
-            const joinResult = await this.tryJoinMeetingAuthenticated();
-            
-            if (joinResult.success) {
-                this.log(`✅ Entrada bem-sucedida: ${joinResult.method}`);
+            if (joined) {
+                this.log('✅ Entrada bem-sucedida!');
+                await this.page.waitForTimeout(5000);
                 
-                // ⏰ Aguardar interface carregar
-                await this.page.waitForTimeout(8000);
+                // Tentar iniciar gravação
+                await this.startRecording();
                 
-                // 🎥 Tentar iniciar gravação com permissões de admin
-                const recordingResult = await this.startRecordingAuthenticated();
-                
-                if (recordingResult.success) {
-                    this.log(`✅ Gravação iniciada: ${recordingResult.reason}`);
-                } else {
-                    this.log(`⚠️ Gravação não foi possível: ${recordingResult.reason}`, 'warning');
-                }
-                
-                // 👀 Monitorar reunião
-                await this.monitorRecording();
+                // Monitorar até o fim
+                await this.monitorUntilEnd();
             } else {
-                this.log(`❌ Falha ao entrar: ${joinResult.reason}`, 'error');
+                this.log('❌ Falha ao entrar na reunião', 'error');
             }
             
         } catch (error) {
@@ -521,255 +276,135 @@ class MeetingRecordingBot {
         }
     }
 
-    async tryJoinMeetingAuthenticated() {
-        this.log('Tentando entrar na reunião com usuário autenticado...');
-        
-        try {
-            // 🔍 Verificar se já está na reunião
-            const alreadyInMeeting = await this.page.evaluate(() => {
-                return document.querySelector('[data-self-video]') !== null ||
-                       document.querySelector('.participants-container') !== null;
-            });
-            
-            if (alreadyInMeeting) {
-                return { success: true, method: 'Já estava na reunião' };
-            }
-            
-            // 🎯 Estratégias de entrada para usuário autenticado
-            const strategies = [
-                {
-                    name: 'Botão principal de entrada',
-                    action: async () => {
-                        const button = await this.page.$('button[jsname="Qx7uuf"]');
-                        if (button) {
-                            await button.click();
-                            await this.page.waitForTimeout(3000);
-                            return true;
-                        }
-                        return false;
-                    }
-                },
-                {
-                    name: 'Botão "Participar agora"',
-                    action: async () => {
-                        const button = await this.page.$('[data-is-touch-wrapper="true"]');
-                        if (button) {
-                            await button.click();
-                            await this.page.waitForTimeout(3000);
-                            return true;
-                        }
-                        return false;
-                    }
-                },
-                {
-                    name: 'Enter para entrar',
-                    action: async () => {
-                        await this.page.keyboard.press('Enter');
-                        await this.page.waitForTimeout(3000);
+    async tryJoin() {
+        const strategies = [
+            {
+                name: 'Botão principal',
+                action: async () => {
+                    const button = await this.page.$('button[jsname="Qx7uuf"]');
+                    if (button) {
+                        await button.click();
                         return true;
                     }
+                    return false;
                 }
-            ];
-            
-            for (const strategy of strategies) {
-                try {
-                    this.log(`Tentando estratégia: ${strategy.name}`);
-                    const success = await strategy.action();
-                    
-                    if (success) {
-                        // Verificar se realmente entrou
-                        const enteredMeeting = await this.page.evaluate(() => {
-                            return document.querySelector('[data-self-video]') !== null ||
-                                   document.querySelector('.participants-container') !== null;
-                        });
-                        
-                        if (enteredMeeting) {
-                            return { success: true, method: strategy.name };
-                        }
-                    }
-                } catch (error) {
-                    this.log(`Estratégia ${strategy.name} falhou: ${error.message}`, 'debug');
+            },
+            {
+                name: 'Enter key',
+                action: async () => {
+                    await this.page.keyboard.press('Enter');
+                    return true;
                 }
             }
-            
-            return { success: false, reason: 'Todas as estratégias de entrada falharam' };
-            
-        } catch (error) {
-            this.log(`Erro ao tentar entrar: ${error.message}`, 'error');
-            return { success: false, reason: error.message };
-        }
-    }
-
-    async startRecordingAuthenticated() {
-        this.log('Tentando iniciar gravação com usuário autenticado...');
+        ];
         
-        try {
-            // 🔍 Verificar permissões de gravação
-            const recordingPermissions = await this.page.evaluate(() => {
-                // Procurar por botões/opções de gravação
-                const recordingIndicators = [
-                    '[aria-label*="Record"]',
-                    '[aria-label*="Gravar"]',
-                    '[data-tooltip*="Record"]', 
-                    '[data-tooltip*="Gravar"]',
-                    'button[data-tooltip*="More options"]',
-                    'button[aria-label*="More options"]',
-                    'button[aria-label*="Mais opções"]'
-                ];
-                
-                const foundElements = [];
-                recordingIndicators.forEach(selector => {
-                    const element = document.querySelector(selector);
-                    if (element) {
-                        foundElements.push({
-                            selector,
-                            text: element.textContent?.trim(),
-                            ariaLabel: element.getAttribute('aria-label'),
-                            visible: element.offsetParent !== null
-                        });
-                    }
-                });
-                
-                return {
-                    hasRecordingOption: foundElements.length > 0,
-                    foundElements,
-                    accountType: document.body.textContent.includes('workspace') ? 'workspace' : 'personal'
-                };
-            });
-            
-            this.log(`Permissões de gravação: ${JSON.stringify(recordingPermissions, null, 2)}`, 'debug');
-            
-            if (!recordingPermissions.hasRecordingOption) {
-                return { 
-                    success: false, 
-                    reason: 'Conta não tem permissões de gravação ou interface não carregou completamente' 
-                };
-            }
-            
-            // 🎯 Tentar abrir menu "Mais opções"
-            const moreOptionsButton = await this.page.$('button[aria-label*="More options"]') ||
-                                    await this.page.$('button[aria-label*="Mais opções"]') ||
-                                    await this.page.$('[data-tooltip*="More options"]');
-            
-            if (moreOptionsButton) {
-                this.log('Clicando em "Mais opções"...');
-                await moreOptionsButton.click();
+        for (const strategy of strategies) {
+            try {
+                this.log(`Tentando: ${strategy.name}`);
+                await strategy.action();
                 await this.page.waitForTimeout(3000);
                 
-                // 🎥 Procurar opção "Gravar reunião"
-                const recordButton = await this.page.evaluate(() => {
-                    const texts = ['Record meeting', 'Gravar reunião', 'Start recording', 'Iniciar gravação'];
+                // Verificar se entrou
+                const inMeeting = await this.page.evaluate(() => {
+                    return document.querySelector('[data-self-video]') !== null;
+                });
+                
+                if (inMeeting) {
+                    return true;
+                }
+            } catch (error) {
+                this.log(`${strategy.name} falhou: ${error.message}`);
+            }
+        }
+        
+        return false;
+    }
+
+    async startRecording() {
+        this.log('Tentando iniciar gravação...');
+        
+        try {
+            await this.page.waitForTimeout(5000);
+            
+            // Procurar menu "Mais opções"
+            const moreOptions = await this.page.$('button[aria-label*="More options"]') ||
+                              await this.page.$('button[aria-label*="Mais opções"]');
+            
+            if (moreOptions) {
+                this.log('Abrindo menu de opções...');
+                await moreOptions.click();
+                await this.page.waitForTimeout(2000);
+                
+                // Procurar opção de gravação
+                const recordOption = await this.page.evaluate(() => {
+                    const texts = ['Record meeting', 'Gravar reunião', 'Start recording'];
                     
                     for (const text of texts) {
                         const elements = Array.from(document.querySelectorAll('*'));
                         const element = elements.find(el => 
-                            el.textContent?.trim().toLowerCase().includes(text.toLowerCase()) &&
-                            (el.tagName === 'BUTTON' || el.tagName === 'DIV' || el.tagName === 'SPAN')
-                        );
-                        if (element && element.offsetParent !== null) {
-                            return { found: true, text: element.textContent, element };
-                        }
-                    }
-                    
-                    return { found: false };
-                });
-                
-                if (recordButton.found) {
-                    this.log(`Botão de gravação encontrado: "${recordButton.text}"`);
-                    
-                    // Tentar clicar no botão de gravação
-                    await this.page.evaluate((text) => {
-                        const elements = Array.from(document.querySelectorAll('*'));
-                        const element = elements.find(el => 
-                            el.textContent?.trim().toLowerCase().includes(text.toLowerCase())
+                            el.textContent?.includes(text)
                         );
                         if (element) {
                             element.click();
+                            return true;
                         }
-                    }, recordButton.text.toLowerCase());
-                    
-                    await this.page.waitForTimeout(3000);
-                    
-                    // 🎯 Confirmar gravação se necessário
-                    const confirmButton = await this.page.evaluate(() => {
-                        const confirmTexts = ['Start', 'Iniciar', 'Confirm', 'Confirmar'];
-                        
-                        for (const text of confirmTexts) {
-                            const elements = Array.from(document.querySelectorAll('button'));
-                            const element = elements.find(el => 
-                                el.textContent?.trim().toLowerCase() === text.toLowerCase()
-                            );
-                            if (element && element.offsetParent !== null) {
-                                element.click();
-                                return { confirmed: true, text };
-                            }
-                        }
-                        
-                        return { confirmed: false };
-                    });
-                    
-                    if (confirmButton.confirmed) {
-                        this.log(`Gravação confirmada com: "${confirmButton.text}"`);
                     }
-                    
-                    this.isRecording = true;
-                    return { success: true, reason: 'Gravação iniciada com sucesso' };
-                    
-                } else {
-                    return { 
-                        success: false, 
-                        reason: 'Botão "Gravar reunião" não encontrado no menu de opções' 
-                    };
-                }
+                    return false;
+                });
                 
+                if (recordOption) {
+                    this.log('✅ Gravação iniciada!');
+                    this.isRecording = true;
+                    
+                    // Confirmar se necessário
+                    await this.page.waitForTimeout(2000);
+                    const confirmButton = await this.page.$('button:contains("Start")') ||
+                                        await this.page.$('button:contains("Iniciar")');
+                    if (confirmButton) {
+                        await confirmButton.click();
+                        this.log('Gravação confirmada');
+                    }
+                } else {
+                    this.log('⚠️ Opção de gravação não encontrada');
+                }
             } else {
-                return { 
-                    success: false, 
-                    reason: 'Botão "Mais opções" não encontrado' 
-                };
+                this.log('⚠️ Menu "Mais opções" não encontrado');
             }
             
         } catch (error) {
             this.log(`Erro ao iniciar gravação: ${error.message}`, 'error');
-            return { success: false, reason: error.message };
         }
     }
 
-    async monitorRecording() {
-        this.log('Iniciando monitoramento da reunião autenticada...');
+    async monitorUntilEnd() {
+        this.log('Monitorando reunião até o fim...');
         
-        const monitorInterval = setInterval(async () => {
+        const checkInterval = setInterval(async () => {
             try {
-                const status = await this.page.evaluate(() => {
-                    return {
-                        url: window.location.href,
-                        title: document.title,
-                        inMeeting: document.querySelector('[data-self-video]') !== null,
-                        participantCount: document.querySelectorAll('[data-participant-id]').length,
-                        isRecording: document.body.textContent.toLowerCase().includes('recording') ||
-                                   document.body.textContent.toLowerCase().includes('gravando')
-                    };
+                const inMeeting = await this.page.evaluate(() => {
+                    return document.querySelector('[data-self-video]') !== null &&
+                           window.location.href.includes('meet.google.com');
                 });
                 
-                this.log(`Status: Em reunião: ${status.inMeeting}, Participantes: ${status.participantCount}, Gravando: ${status.isRecording}`, 'debug');
-                
-                if (!status.inMeeting || !status.url.includes('meet.google.com')) {
-                    this.log('Reunião encerrada - finalizando bot');
-                    clearInterval(monitorInterval);
+                if (!inMeeting) {
+                    this.log('📞 Reunião encerrada');
+                    clearInterval(checkInterval);
                     await this.cleanup();
                     return;
                 }
                 
+                this.log('👥 Ainda na reunião...');
+                
             } catch (error) {
                 this.log(`Erro no monitoramento: ${error.message}`, 'error');
-                clearInterval(monitorInterval);
+                clearInterval(checkInterval);
                 await this.cleanup();
             }
         }, 30000);
     }
 
     async cleanup() {
-        this.log('Iniciando limpeza de recursos...');
+        this.log('Finalizando bot...');
         
         try {
             this.isMonitoring = false;
@@ -782,16 +417,13 @@ class MeetingRecordingBot {
                 await this.browser.close();
             }
             
-            const storageKey = this.meeting.eventId || this.meeting.ment_id;
-            if (storageKey) {
-                activeBots.delete(storageKey);
-                monitoringIntervals.delete(storageKey);
-            }
+            // Remover da lista de bots ativos
+            activeBots.delete(this.botId);
             
-            this.log('Limpeza concluída');
+            this.log('✅ Cleanup concluído');
             
         } catch (error) {
-            this.log(`Erro na limpeza: ${error.message}`, 'error');
+            this.log(`Erro no cleanup: ${error.message}`, 'error');
         }
     }
 
@@ -800,57 +432,118 @@ class MeetingRecordingBot {
     }
 }
 
-// Express server endpoints...
+// 🌐 ENDPOINTS EXPRESS
+
 app.get('/', (req, res) => {
     res.send(`
         <html>
-        <head><title>🤖 Bot Google Meet - AUTENTICADO</title></head>
+        <head><title>🤖 Bot Google Meet - Multi Reunião</title></head>
         <body style="font-family: Arial; margin: 40px;">
             <h1>🤖 Bot de Gravação Google Meet</h1>
             <div style="background: #d4edda; padding: 15px; border-radius: 5px;">
-                <h3>🔐 Bot Online - Com Login Automático Seguro</h3>
-                <p><strong>Reuniões:</strong> ${meetings.size}</p>
-                <p><strong>Ativos:</strong> ${activeBots.size}</p>
-                <p><strong>Monitorando:</strong> ${monitoringIntervals.size}</p>
-                <p><strong>Status:</strong> Login automático configurado</p>
-            </div>
-            
-            <div style="margin-top: 20px; background: #fff3cd; padding: 15px; border-radius: 5px;">
-                <h3>⚙️ Configuração Necessária</h3>
-                <p><strong>Variáveis de ambiente necessárias:</strong></p>
-                <code>
-                    GOOGLE_EMAIL=admin@seuworkspace.com<br>
-                    GOOGLE_PASSWORD=suasenhasegura
-                </code>
-                <p><small>⚠️ Configure essas variáveis no EasyPanel para o bot funcionar</small></p>
+                <h3>✅ Bot Online - Versão Cookies</h3>
+                <p><strong>Reuniões Agendadas:</strong> ${meetings.size}</p>
+                <p><strong>Bots Ativos:</strong> ${activeBots.size}</p>
+                <p><strong>Sistema:</strong> Multi-reunião simultânea</p>
             </div>
             
             <div style="margin-top: 20px;">
-                <h3>🔍 Debug</h3>
-                <a href="/api/debug/logs">Ver Logs Detalhados</a><br>
-                <a href="/api/debug/bots">Status dos Bots Autenticados</a>
+                <h3>🔧 Configuração</h3>
+                <p><a href="/setup" style="background: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
+                   🍪 Configurar Cookies
+                </a></p>
+                <p><a href="/api/debug/logs" style="background: #17a2b8; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
+                   📊 Ver Logs
+                </a></p>
             </div>
         </body>
         </html>
     `);
 });
 
-app.get('/api/debug/logs', (req, res) => {
-    const allLogs = [];
-    for (const [eventId, bot] of activeBots) {
-        allLogs.push({
-            eventId,
-            isLoggedIn: bot.isLoggedIn,
-            logs: bot.getDebugLogs()
-        });
-    }
-    res.json(allLogs);
+// 🍪 Página de setup de cookies
+app.get('/setup', (req, res) => {
+    res.send(`
+        <html>
+        <head><title>🍪 Setup Cookies</title></head>
+        <body style="font-family: Arial; margin: 40px;">
+            <h1>🍪 Configuração de Cookies</h1>
+            
+            <div style="background: #fff3cd; padding: 20px; border-radius: 5px; margin-bottom: 20px;">
+                <h3>📋 Instruções:</h3>
+                <ol>
+                    <li><strong>Abra</strong> <a href="https://accounts.google.com" target="_blank">accounts.google.com</a> em nova aba</li>
+                    <li><strong>Faça login</strong> com mentorias@universoextremo.com.br</li>
+                    <li><strong>Abra DevTools</strong> (F12)</li>
+                    <li><strong>Console tab</strong></li>
+                    <li><strong>Cole e execute:</strong></li>
+                </ol>
+                
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; font-family: monospace; margin: 10px 0;">
+copy(JSON.stringify(document.cookie.split('; ').map(c => {
+    const [name, value] = c.split('=');
+    return {
+        name: name,
+        value: value,
+        domain: '.google.com',
+        path: '/',
+        httpOnly: false,
+        secure: true
+    };
+})))
+                </div>
+                
+                <p>6. <strong>Cole o resultado</strong> na caixa abaixo:</p>
+            </div>
+            
+            <form action="/save-cookies" method="post">
+                <textarea name="cookies" placeholder="Cole os cookies aqui..." 
+                         style="width: 100%; height: 200px; margin: 10px 0;"></textarea>
+                <br>
+                <button type="submit" style="background: #28a745; color: white; padding: 10px 20px; border: none; border-radius: 5px;">
+                    💾 Salvar Cookies
+                </button>
+            </form>
+        </body>
+        </html>
+    `);
 });
 
+// 💾 Salvar cookies
+app.post('/save-cookies', express.urlencoded({ extended: true }), (req, res) => {
+    try {
+        const cookies = JSON.parse(req.body.cookies);
+        
+        // Salvar no cache
+        cookiesData.set('google_cookies', cookies);
+        
+        // Salvar em arquivo
+        fs.writeFileSync(path.join(__dirname, 'cookies.json'), JSON.stringify(cookies, null, 2));
+        
+        res.send(`
+            <div style="font-family: Arial; margin: 40px;">
+                <h2 style="color: green;">✅ Cookies salvos com sucesso!</h2>
+                <p>O bot agora pode se autenticar automaticamente.</p>
+                <a href="/">← Voltar ao painel</a>
+            </div>
+        `);
+        
+    } catch (error) {
+        res.send(`
+            <div style="font-family: Arial; margin: 40px;">
+                <h2 style="color: red;">❌ Erro ao salvar cookies</h2>
+                <p>${error.message}</p>
+                <a href="/setup">← Tentar novamente</a>
+            </div>
+        `);
+    }
+});
+
+// 🚀 Endpoint principal - compatível com n8n
 app.post('/api/schedule-recording', async (req, res) => {
     const meetingData = req.body;
     
-    console.log('📅 Nova reunião (com login automático):', JSON.stringify(meetingData, null, 2));
+    console.log('📅 Nova reunião agendada:', JSON.stringify(meetingData, null, 2));
     
     const eventId = meetingData.eventId || meetingData.ment_id || `meeting_${Date.now()}`;
     const meetingUrl = meetingData.meetingUrl || meetingData.ment_zoom;
@@ -858,16 +551,7 @@ app.post('/api/schedule-recording', async (req, res) => {
     if (!eventId || !meetingUrl) {
         return res.status(400).json({
             success: false,
-            message: 'Dados faltando: eventId e meetingUrl necessários'
-        });
-    }
-    
-    // ✅ Verificar se credenciais estão configuradas
-    if (!process.env.GOOGLE_EMAIL || !process.env.GOOGLE_PASSWORD) {
-        return res.status(500).json({
-            success: false,
-            message: 'Erro de configuração: GOOGLE_EMAIL e GOOGLE_PASSWORD devem estar configurados nas variáveis de ambiente',
-            error: 'Credenciais não configuradas'
+            message: 'EventID e meetingUrl são obrigatórios'
         });
     }
     
@@ -875,88 +559,94 @@ app.post('/api/schedule-recording', async (req, res) => {
         ...meetingData,
         eventId: eventId,
         scheduled: new Date().toISOString(),
-        status: 'monitoring',
-        authenticatedBot: true
+        status: 'scheduled'
     });
     
     try {
-        const bot = new MeetingRecordingBot(meetingData);
-        activeBots.set(eventId, bot);
+        // 🤖 Criar bot único para esta reunião
+        const botId = `bot_${eventId}_${Date.now()}`;
+        const bot = new MeetingRecordingBot(meetingData, botId);
         
+        activeBots.set(botId, bot);
+        
+        // 🚀 Inicializar e começar monitoramento
         await bot.initialize();
         await bot.startMonitoring();
         
-        console.log('✅ Bot autenticado configurado!');
+        console.log(`✅ Bot ${botId} configurado para reunião ${eventId}`);
         
         res.json({
             success: true,
-            message: 'Bot autenticado configurado com sucesso!',
+            message: 'Bot configurado com sucesso!',
             eventId: eventId,
+            botId: botId,
             status: 'monitoring',
-            authenticated: true,
-            debugUrl: `/api/debug/logs`
+            activeBots: activeBots.size
         });
         
     } catch (error) {
         console.error('❌ Erro:', error.message);
         
-        activeBots.delete(eventId);
         meetings.delete(eventId);
         
         res.status(500).json({
             success: false,
-            message: 'Erro ao configurar bot autenticado',
+            message: 'Erro ao configurar bot',
             error: error.message
         });
     }
 });
 
-app.get('/api/health', (req, res) => {
-    const hasCredentials = !!(process.env.GOOGLE_EMAIL && process.env.GOOGLE_PASSWORD);
-    
+// 📊 Status
+app.get('/api/status', (req, res) => {
     res.json({
-        status: 'healthy',
+        meetings: meetings.size,
+        activeBots: activeBots.size,
+        hasCookies: cookiesData.has('google_cookies'),
         uptime: process.uptime(),
-        chrome: 'Puppeteer bundled - FUNCIONANDO 100%',
-        version: 'AUTENTICADO COM LOGIN SEGURO',
-        authenticated: hasCredentials,
-        timestamp: new Date().toISOString()
+        botList: Array.from(activeBots.keys())
     });
 });
 
-app.get('/api/meetings', (req, res) => {
+// 📋 Logs de debug
+app.get('/api/debug/logs', (req, res) => {
+    const allLogs = [];
+    for (const [botId, bot] of activeBots) {
+        allLogs.push({
+            botId,
+            logs: bot.getDebugLogs()
+        });
+    }
+    res.json(allLogs);
+});
+
+// 🔧 Health check
+app.get('/api/health', (req, res) => {
     res.json({
-        total: meetings.size,
-        active: activeBots.size,
-        monitoring: monitoringIntervals.size,
-        meetings: Array.from(meetings.values()),
-        status: 'Bot funcionando com login automático seguro!'
+        status: 'healthy',
+        uptime: process.uptime(),
+        version: 'COOKIES + MULTI-REUNIÃO',
+        hasCookies: cookiesData.has('google_cookies') || fs.existsSync(path.join(__dirname, 'cookies.json')),
+        activeBots: activeBots.size,
+        timestamp: new Date().toISOString()
     });
 });
 
 app.listen(port, () => {
     console.log('🤖 =====================================');
-    console.log('🤖 BOT GOOGLE MEET - LOGIN AUTOMÁTICO');
+    console.log('🤖 BOT GOOGLE MEET - VERSÃO FINAL');
     console.log('🤖 =====================================');
     console.log(`🌐 Porta: ${port}`);
-    console.log(`🔧 Chrome: Puppeteer bundled`);
-    console.log(`🔐 Login: Automático e Seguro`);
-    
-    if (process.env.GOOGLE_EMAIL && process.env.GOOGLE_PASSWORD) {
-        console.log(`✅ Credenciais: Configuradas`);
-        console.log(`📧 Email: ${process.env.GOOGLE_EMAIL.replace(/(.{3}).*@/, '$1***@')}`);
-    } else {
-        console.log(`❌ Credenciais: NÃO CONFIGURADAS`);
-        console.log(`⚠️ Configure GOOGLE_EMAIL e GOOGLE_PASSWORD nas variáveis de ambiente`);
-    }
-    
-    console.log('✅ BOT PRONTO PARA GRAVAR COM PERMISSÕES ADMIN!');
+    console.log(`🍪 Autenticação: Cookies`);
+    console.log(`🤖 Sistema: Multi-reunião simultânea`);
+    console.log(`🔧 Setup: http://localhost:${port}/setup`);
+    console.log('✅ BOT PRONTO PARA MÚLTIPLAS GRAVAÇÕES!');
     console.log('🤖 =====================================');
 });
 
 process.on('SIGTERM', async () => {
-    console.log('🛑 Encerrando bots autenticados...');
-    for (const [eventId, bot] of activeBots) {
+    console.log('🛑 Encerrando todos os bots...');
+    for (const [botId, bot] of activeBots) {
         await bot.cleanup();
     }
     process.exit(0);
