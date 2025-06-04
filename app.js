@@ -70,7 +70,7 @@ class MeetingRecordingBot {
 
     async performSecureLogin() {
         try {
-            this.log('Iniciando login automático seguro...');
+            this.log('Iniciando login automático seguro melhorado...');
             
             // 📧 Credenciais das variáveis de ambiente
             const email = process.env.GOOGLE_EMAIL;
@@ -78,61 +78,224 @@ class MeetingRecordingBot {
             
             if (!email || !password) {
                 this.log('ERRO: Credenciais não configuradas nas variáveis de ambiente', 'error');
-                this.log('Configure GOOGLE_EMAIL e GOOGLE_PASSWORD', 'error');
                 return false;
             }
             
             this.log(`Fazendo login com: ${email.replace(/(.{3}).*@/, '$1***@')}`);
             
             // 🌐 Ir para página de login do Google
-            await this.page.goto('https://accounts.google.com/signin', {
-                waitUntil: 'networkidle2',
+            this.log('Navegando para página de login...');
+            await this.page.goto('https://accounts.google.com/signin/v2/identifier', {
+                waitUntil: 'networkidle0',
                 timeout: 30000
             });
             
-            // 📧 PASSO 1: Inserir email
-            this.log('Inserindo email...');
-            await this.page.waitForSelector('#identifierId', { timeout: 15000 });
-            await this.page.type('#identifierId', email, { delay: 100 });
-            
-            // ▶️ Clicar em "Próximo"
-            await this.page.click('#identifierNext');
+            // ⏰ Aguardar página carregar completamente
             await this.page.waitForTimeout(3000);
             
-            // 🔐 PASSO 2: Inserir senha
-            this.log('Inserindo senha...');
-            await this.page.waitForSelector('input[name="password"]', { timeout: 15000 });
-            await this.page.type('input[name="password"]', password, { delay: 100 });
+            // 📧 PASSO 1: Aguardar e inserir email
+            this.log('Aguardando campo de email...');
             
-            // ▶️ Clicar em "Próximo"
-            await this.page.click('#passwordNext');
+            // Múltiplos seletores para o campo de email
+            const emailSelectors = [
+                '#identifierId',
+                'input[type="email"]',
+                'input[name="identifier"]',
+                '[data-initial-value=""]'
+            ];
             
-            // ⏰ Aguardar login ser processado
+            let emailField = null;
+            for (const selector of emailSelectors) {
+                try {
+                    await this.page.waitForSelector(selector, { timeout: 5000 });
+                    emailField = await this.page.$(selector);
+                    if (emailField) {
+                        this.log(`Campo de email encontrado: ${selector}`);
+                        break;
+                    }
+                } catch (e) {
+                    this.log(`Seletor ${selector} não encontrado, tentando próximo...`);
+                }
+            }
+            
+            if (!emailField) {
+                this.log('ERRO: Campo de email não encontrado com nenhum seletor', 'error');
+                return false;
+            }
+            
+            // Limpar campo e inserir email
+            await emailField.click({ clickCount: 3 }); // Selecionar tudo
+            await emailField.type(email, { delay: 150 });
+            
+            this.log('Email inserido com sucesso');
+            
+            // ▶️ Clicar em "Próximo" - múltiplos seletores
+            const nextButtonSelectors = [
+                '#identifierNext',
+                'button[jsname="LgbsSe"]',
+                '[data-primary="true"]',
+                'button:contains("Next")',
+                'button:contains("Próximo")'
+            ];
+            
+            let nextButton = null;
+            for (const selector of nextButtonSelectors) {
+                try {
+                    nextButton = await this.page.$(selector);
+                    if (nextButton) {
+                        this.log(`Botão "Próximo" encontrado: ${selector}`);
+                        break;
+                    }
+                } catch (e) {
+                    continue;
+                }
+            }
+            
+            if (nextButton) {
+                await nextButton.click();
+                this.log('Clicou em "Próximo" após email');
+            } else {
+                // Fallback: usar Enter
+                await this.page.keyboard.press('Enter');
+                this.log('Usou Enter como fallback para próximo');
+            }
+            
+            // ⏰ Aguardar transição para página de senha
+            await this.page.waitForTimeout(4000);
+            
+            // 🔐 PASSO 2: Aguardar e inserir senha
+            this.log('Aguardando campo de senha...');
+            
+            // Múltiplos seletores para o campo de senha
+            const passwordSelectors = [
+                'input[name="password"]',
+                'input[type="password"]',
+                '#password',
+                '[data-initial-value=""]:not([type="email"])'
+            ];
+            
+            let passwordField = null;
+            for (const selector of passwordSelectors) {
+                try {
+                    await this.page.waitForSelector(selector, { timeout: 10000 });
+                    passwordField = await this.page.$(selector);
+                    if (passwordField) {
+                        this.log(`Campo de senha encontrado: ${selector}`);
+                        break;
+                    }
+                } catch (e) {
+                    this.log(`Seletor de senha ${selector} não encontrado, tentando próximo...`);
+                }
+            }
+            
+            if (!passwordField) {
+                this.log('ERRO: Campo de senha não encontrado', 'error');
+                
+                // Debug: capturar estado atual da página
+                const currentUrl = this.page.url();
+                const pageTitle = await this.page.title();
+                this.log(`URL atual: ${currentUrl}`, 'debug');
+                this.log(`Título da página: ${pageTitle}`, 'debug');
+                
+                // Verificar se há mensagens de erro
+                const errorMessages = await this.page.$eval('[jsname="B34EJ"], .LXRPh, [data-error="true"]', 
+                    elements => elements.map(el => el.textContent.trim())
+                ).catch(() => []);
+                
+                if (errorMessages.length > 0) {
+                    this.log(`Mensagens de erro encontradas: ${errorMessages.join(', ')}`, 'error');
+                }
+                
+                return false;
+            }
+            
+            // Inserir senha
+            await passwordField.click();
+            await passwordField.type(password, { delay: 150 });
+            
+            this.log('Senha inserida com sucesso');
+            
+            // ▶️ Clicar em "Próximo" para senha
+            const passwordNextSelectors = [
+                '#passwordNext',
+                'button[jsname="LgbsSe"]',
+                '[data-primary="true"]',
+                'button:contains("Next")',
+                'button:contains("Próximo")'
+            ];
+            
+            let passwordNext = null;
+            for (const selector of passwordNextSelectors) {
+                try {
+                    passwordNext = await this.page.$(selector);
+                    if (passwordNext) {
+                        this.log(`Botão "Próximo" da senha encontrado: ${selector}`);
+                        break;
+                    }
+                } catch (e) {
+                    continue;
+                }
+            }
+            
+            if (passwordNext) {
+                await passwordNext.click();
+                this.log('Clicou em "Próximo" após senha');
+            } else {
+                // Fallback: usar Enter
+                await this.page.keyboard.press('Enter');
+                this.log('Usou Enter como fallback para senha');
+            }
+            
+            // ⏰ Aguardar login ser processado (mais tempo)
             this.log('Aguardando autenticação...');
-            await this.page.waitForTimeout(5000);
+            await this.page.waitForTimeout(8000);
             
             // ✅ Verificar se login foi bem-sucedido
             const currentUrl = this.page.url();
+            this.log(`URL após login: ${currentUrl}`, 'debug');
             
-            if (currentUrl.includes('myaccount.google.com') || 
-                currentUrl.includes('accounts.google.com/ManageAccount') ||
-                !currentUrl.includes('signin')) {
-                
+            // Múltiplas formas de verificar sucesso
+            const loginSuccessIndicators = [
+                'myaccount.google.com',
+                'accounts.google.com/ManageAccount',
+                'accounts.google.com/b/0/ManageAccount'
+            ];
+            
+            const isLoginSuccessful = loginSuccessIndicators.some(indicator => 
+                currentUrl.includes(indicator)
+            ) || !currentUrl.includes('signin');
+            
+            if (isLoginSuccessful) {
                 this.log('✅ Login realizado com sucesso!');
                 this.isLoggedIn = true;
                 
                 // 🍪 Aguardar cookies serem salvos
-                await this.page.waitForTimeout(2000);
+                await this.page.waitForTimeout(3000);
                 
                 return true;
             } else {
                 this.log('❌ Login falhou - ainda na página de autenticação', 'error');
                 
                 // 🔍 Verificar erros específicos
-                const errorElements = await this.page.$$('[jsname="B34EJ"]'); // Selector de erro do Google
+                const errorElements = await this.page.$eval(
+                    '[jsname="B34EJ"], .LXRPh, [data-error="true"], .dEOOab',
+                    elements => elements.map(el => el.textContent.trim()).filter(text => text.length > 0)
+                ).catch(() => []);
+                
                 if (errorElements.length > 0) {
-                    const errorText = await this.page.evaluate(el => el.textContent, errorElements[0]);
-                    this.log(`Erro de login detectado: ${errorText}`, 'error');
+                    this.log(`Erros de login detectados: ${errorElements.join(', ')}`, 'error');
+                }
+                
+                // Verificar se há captcha ou verificação adicional
+                const hasCaptcha = await this.page.$('#captcha') !== null;
+                const has2FA = await this.page.$('[data-send-method]') !== null;
+                
+                if (hasCaptcha) {
+                    this.log('❌ Captcha detectado - login automático não é possível', 'error');
+                }
+                
+                if (has2FA) {
+                    this.log('❌ Verificação em duas etapas detectada', 'error');
                 }
                 
                 return false;
@@ -140,6 +303,17 @@ class MeetingRecordingBot {
             
         } catch (error) {
             this.log(`Erro durante login: ${error.message}`, 'error');
+            
+            // Debug adicional em caso de erro
+            try {
+                const currentUrl = this.page.url();
+                const pageTitle = await this.page.title();
+                this.log(`URL no erro: ${currentUrl}`, 'debug');
+                this.log(`Título no erro: ${pageTitle}`, 'debug');
+            } catch (debugError) {
+                this.log(`Erro no debug: ${debugError.message}`, 'debug');
+            }
+            
             return false;
         }
     }
